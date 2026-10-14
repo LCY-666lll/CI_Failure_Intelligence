@@ -3,7 +3,10 @@ name = "ci-failure-intelligence"
 version = "0.1.0"
 description = "Evidence-driven CI failure clustering, retrieval, and diagnosis platform"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "fastapi>=0.142.3,<0.143.0",
+    "uvicorn[standard]>=0.53.0,<0.54.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.13.0,<0.14.0"]
@@ -11,3 +14,9 @@ build-backend = "uv_build"
 
 [tool.uv]
 link-mode = "copy"
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.13.0,<2.14.0",
+    "pytest>=9.1.1,<9.2.0",
+]
