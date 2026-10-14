@@ -31,6 +31,8 @@
         "**/.ruff_cache/**"
     ],
     "ruff.enable": true,
+    "ruff.importStrategy": "useBundled",
+    "ruff.lint.enable": false,
     "pythonIndent.trimLinesWithOnlyWhitespace": true,
     "pythonIndent.useTabOnHangingIndent": true,
     "autoDocstring.docstringFormat": "google",
