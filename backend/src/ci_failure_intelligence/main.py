@@ -1,11 +1,14 @@
 """创建并配置 CI Failure Intelligence 的 FastAPI 应用。"""
 
 from fastapi import FastAPI, status
+from ci_failure_intelligence.api.routes import ci_ingest
 
 app = FastAPI(
     title="CI Failure Intelligence API",
     version="0.1.0",
 )
+
+app.include_router(ci_ingest.router)
 
 @app.get(
     "/health/live",
@@ -13,7 +16,11 @@ app = FastAPI(
     tags=["health"]
 )
 async def live_health_check():
-    """提供一个轻量的进程存活接口,检查 API 进程是否能够正常处理 HTTP 请求。"""
+    """返回 API 进程的基础存活状态。
+
+    Returns:
+        dict[str, str]: 固定包含 `status=ok` 的存活状态。
+    """
 
     return {"status": "ok"}
 
