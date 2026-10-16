@@ -18,6 +18,8 @@ from pydantic_settings import BaseSettings,SettingsConfigDict
 
 DEFAULT_INGEST_MAX_BODY_BYTES = 8 * 1024 * 1024
 
+DEFAULT_INGEST_TIMESTAMP_TOLERANCE_SECONDS = 300
+
 # 继承 BaseSettings：获得读取运行配置的能力，把环境变量和 .env 作为字段数据来源
 class Settings(BaseSettings):
     """集中描述后端从环境变量读取的运行配置。"""
@@ -41,6 +43,13 @@ class Settings(BaseSettings):
     ingest_max_body_bytes: int = Field(
         default=DEFAULT_INGEST_MAX_BODY_BYTES,
         gt=0,
+    )
+
+    # 控制请求 timestamp 与服务器当前时间允许相差的最大秒数。
+    ingest_timestamp_tolerance_seconds:int = Field(
+        default=DEFAULT_INGEST_TIMESTAMP_TOLERANCE_SECONDS,
+        gt = 0,
+        le = DEFAULT_INGEST_TIMESTAMP_TOLERANCE_SECONDS
     )
 
     # 向 Pydantic 登记：处理 ingest_hmac_secret 字段时，调用下面这个方法检查它。

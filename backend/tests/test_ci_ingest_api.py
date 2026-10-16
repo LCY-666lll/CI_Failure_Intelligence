@@ -3,15 +3,25 @@
 import hashlib
 import hmac
 import json
+import time
 from typing import Any
 
 from fastapi.testclient import TestClient
 
 from ci_failure_intelligence.middleware.ci_ingest_security import (
+    CI_INGEST_NONCE_HEADER,
     CI_INGEST_PATH,
     CI_INGEST_SIGNATURE_HEADER,
+    CI_INGEST_TIMESTAMP_HEADER,
     INVALID_SIGNATURE_DETAIL,
 )
+
+
+TEST_NONCE = "550e8400-e29b-41d4-a716-446655440000"
+
+TIMESTAMP_HEADER = CI_INGEST_TIMESTAMP_HEADER.decode("ascii")
+NONCE_HEADER = CI_INGEST_NONCE_HEADER.decode("ascii")
+SIGNATURE_HEADER = CI_INGEST_SIGNATURE_HEADER.decode("ascii")
 
 
 def build_valid_payload() -> dict[str, Any]:
@@ -46,12 +56,25 @@ def serialize_json(payload: dict[str, Any]) -> bytes:
 
 
 def create_signed_headers(body: bytes, secret: bytes) -> dict[str, str]:
-    """为实际发送的原始 Body 创建测试签名和内容类型。"""
+    """为实际发送的原始 Body 创建 v1 安全请求头和内容类型。"""
 
-    digest = hmac.new(secret, body, hashlib.sha256).hexdigest()
+    # 应用级测试使用真实系统时钟，因此每次签名时生成当前 timestamp。
+    timestamp = str(int(time.time()))
+    signing_message = (
+        b"v1."
+        + timestamp.encode("ascii")
+        + b"."
+        + TEST_NONCE.encode("ascii")
+        + b"."
+        + body
+    )
+    digest = hmac.new(secret, signing_message, hashlib.sha256).hexdigest()
+
     return {
         "content-type": "application/json",
-        CI_INGEST_SIGNATURE_HEADER: f"sha256={digest}",
+        TIMESTAMP_HEADER: timestamp,
+        NONCE_HEADER: TEST_NONCE,
+        SIGNATURE_HEADER: f"v1={digest}",
     }
 
 

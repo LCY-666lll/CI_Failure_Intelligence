@@ -39,7 +39,8 @@ def create_app(
     app.add_middleware(
         CiIngestSecurityMiddleware,
         secret=ingest_hmac_secret,
-        max_body_bytes=settings.ingest_max_body_bytes
+        max_body_bytes=settings.ingest_max_body_bytes,
+        timestamp_tolerance_seconds=settings.ingest_timestamp_tolerance_seconds
     )
 
     # state用于保存属于当前FastAPI实例的共享对象。

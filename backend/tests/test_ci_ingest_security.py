@@ -1,8 +1,9 @@
-"""验证 CI 接入 HMAC 安全中间件的关键行为。"""
+"""验证 CI 接入 v1 HMAC 安全中间件的关键行为。"""
 
 import asyncio
 import hashlib
 import hmac
+from collections.abc import Callable
 
 from httpx2 import Client
 from starlette.applications import Starlette
@@ -14,25 +15,67 @@ from starlette.types import Message, Receive, Scope, Send
 
 from ci_failure_intelligence.middleware.ci_ingest_security import (
     BODY_TOO_LARGE_DETAIL,
+    CI_INGEST_NONCE_HEADER,
     CI_INGEST_PATH,
     CI_INGEST_SIGNATURE_HEADER,
+    CI_INGEST_TIMESTAMP_HEADER,
     INVALID_SIGNATURE_DETAIL,
     CiIngestSecurityMiddleware,
 )
 
 
 TEST_SECRET = b"test-only-secret-with-at-least-32-bytes"
+FIXED_CURRENT_TIME_SECONDS = 1_792_100_000
+TEST_TIMESTAMP = str(FIXED_CURRENT_TIME_SECONDS)
+TEST_NONCE = "550e8400-e29b-41d4-a716-446655440000"
+
+# TestClient 使用字符串请求头；ASGI 中间件使用 bytes 请求头。
+TIMESTAMP_HEADER = CI_INGEST_TIMESTAMP_HEADER.decode("ascii")
+NONCE_HEADER = CI_INGEST_NONCE_HEADER.decode("ascii")
+SIGNATURE_HEADER = CI_INGEST_SIGNATURE_HEADER.decode("ascii")
 
 
-def create_signature(body: bytes) -> str:
-    """为测试请求生成与服务端协议一致的签名头。"""
+def create_signature(
+    body: bytes,
+    *,
+    timestamp: str = TEST_TIMESTAMP,
+    nonce: str = TEST_NONCE,
+) -> str:
+    """按照项目 v1 协议为测试请求生成签名。"""
 
-    digest = hmac.new(TEST_SECRET, body, hashlib.sha256).hexdigest()
-    return f"sha256={digest}"
+    signing_message = (
+        b"v1."
+        + timestamp.encode("ascii")
+        + b"."
+        + nonce.encode("ascii")
+        + b"."
+        + body
+    )
+    digest = hmac.new(TEST_SECRET, signing_message, hashlib.sha256).hexdigest()
+    return f"v1={digest}"
+
+
+def create_signed_headers(
+    body: bytes,
+    *,
+    timestamp: str = TEST_TIMESTAMP,
+    nonce: str = TEST_NONCE,
+) -> dict[str, str]:
+    """创建 TestClient 可以直接使用的 v1 安全请求头。"""
+
+    return {
+        TIMESTAMP_HEADER: timestamp,
+        NONCE_HEADER: nonce,
+        SIGNATURE_HEADER: create_signature(
+            body,
+            timestamp=timestamp,
+            nonce=nonce,
+        ),
+    }
 
 
 async def echo_body(request: Request) -> JSONResponse:
-    """返回下游实际读取到的 Body，验证中间件重放没有改变字节。"""
+    """返回下游读取到的 Body，验证中间件重放没有改变字节。"""
 
     body = await request.body()
     return JSONResponse({"body_hex": body.hex()})
@@ -44,7 +87,12 @@ async def health_check(_: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-def create_test_client(*, max_body_bytes: int) -> Client:
+def create_test_client(
+    *,
+    max_body_bytes: int,
+    timestamp_tolerance_seconds: int = 300,
+    clock: Callable[[], float] = lambda: float(FIXED_CURRENT_TIME_SECONDS),
+) -> Client:
     """创建只用于测试安全中间件的轻量 ASGI 应用。"""
 
     downstream_app = Starlette(
@@ -57,6 +105,8 @@ def create_test_client(*, max_body_bytes: int) -> Client:
         downstream_app,
         secret=TEST_SECRET,
         max_body_bytes=max_body_bytes,
+        timestamp_tolerance_seconds=timestamp_tolerance_seconds,
+        clock=clock,
     )
     return TestClient(secured_app)
 
@@ -70,7 +120,7 @@ def test_non_ingest_request_bypasses_signature_check() -> None:
     assert response.json() == {"status": "ok"}
 
 
-def test_missing_signature_returns_401_before_body_size_check() -> None:
+def test_missing_security_headers_returns_401_before_body_size_check() -> None:
     client = create_test_client(max_body_bytes=1)
 
     response = client.post(CI_INGEST_PATH, content=b"too-large")
@@ -81,12 +131,10 @@ def test_missing_signature_returns_401_before_body_size_check() -> None:
 
 def test_malformed_signature_returns_401() -> None:
     client = create_test_client(max_body_bytes=32)
+    headers = create_signed_headers(b"body")
+    headers[SIGNATURE_HEADER] = "v1=123"
 
-    response = client.post(
-        CI_INGEST_PATH,
-        content=b"body",
-        headers={CI_INGEST_SIGNATURE_HEADER: "sha256=123"},
-    )
+    response = client.post(CI_INGEST_PATH, content=b"body", headers=headers)
 
     assert response.status_code == 401
     assert response.json() == {"detail": INVALID_SIGNATURE_DETAIL}
@@ -94,12 +142,119 @@ def test_malformed_signature_returns_401() -> None:
 
 def test_wrong_signature_returns_401() -> None:
     client = create_test_client(max_body_bytes=32)
+    headers = create_signed_headers(b"body")
+    headers[SIGNATURE_HEADER] = f"v1={'0' * 64}"
+
+    response = client.post(CI_INGEST_PATH, content=b"body", headers=headers)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": INVALID_SIGNATURE_DETAIL}
+
+
+def test_modified_timestamp_cannot_reuse_old_signature() -> None:
+    body = b"body"
+    client = create_test_client(max_body_bytes=32)
+    headers = create_signed_headers(body)
+    headers[TIMESTAMP_HEADER] = "1792100001"
+
+    response = client.post(CI_INGEST_PATH, content=body, headers=headers)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": INVALID_SIGNATURE_DETAIL}
+
+
+def test_modified_nonce_cannot_reuse_old_signature() -> None:
+    body = b"body"
+    client = create_test_client(max_body_bytes=32)
+    headers = create_signed_headers(body)
+    headers[NONCE_HEADER] = "550e8400-e29b-41d4-a716-446655440001"
+
+    response = client.post(CI_INGEST_PATH, content=body, headers=headers)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": INVALID_SIGNATURE_DETAIL}
+
+
+def test_timestamp_at_past_boundary_is_accepted() -> None:
+    body = b"body"
+    timestamp = str(FIXED_CURRENT_TIME_SECONDS - 300)
+    client = create_test_client(max_body_bytes=32)
 
     response = client.post(
         CI_INGEST_PATH,
-        content=b"body",
-        headers={CI_INGEST_SIGNATURE_HEADER: f"sha256={'0' * 64}"},
+        content=body,
+        headers=create_signed_headers(body, timestamp=timestamp),
     )
+
+    assert response.status_code == 200
+
+
+def test_timestamp_at_future_boundary_is_accepted() -> None:
+    body = b"body"
+    timestamp = str(FIXED_CURRENT_TIME_SECONDS + 300)
+    client = create_test_client(max_body_bytes=32)
+
+    response = client.post(
+        CI_INGEST_PATH,
+        content=body,
+        headers=create_signed_headers(body, timestamp=timestamp),
+    )
+
+    assert response.status_code == 200
+
+
+def test_timestamp_older_than_tolerance_returns_401() -> None:
+    body = b"body"
+    timestamp = str(FIXED_CURRENT_TIME_SECONDS - 301)
+    client = create_test_client(max_body_bytes=32)
+
+    response = client.post(
+        CI_INGEST_PATH,
+        content=body,
+        headers=create_signed_headers(body, timestamp=timestamp),
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": INVALID_SIGNATURE_DETAIL}
+
+
+def test_timestamp_too_far_in_future_returns_401() -> None:
+    body = b"body"
+    timestamp = str(FIXED_CURRENT_TIME_SECONDS + 301)
+    client = create_test_client(max_body_bytes=32)
+
+    response = client.post(
+        CI_INGEST_PATH,
+        content=body,
+        headers=create_signed_headers(body, timestamp=timestamp),
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": INVALID_SIGNATURE_DETAIL}
+
+
+def test_invalid_hmac_does_not_read_server_clock() -> None:
+    def fail_if_called() -> float:
+        raise AssertionError("HMAC 失败时不应读取服务器时间")
+
+    body = b"body"
+    client = create_test_client(max_body_bytes=32, clock=fail_if_called)
+    headers = create_signed_headers(body)
+    headers[SIGNATURE_HEADER] = f"v1={'0' * 64}"
+
+    response = client.post(CI_INGEST_PATH, content=body, headers=headers)
+
+    assert response.status_code == 401
+
+
+def test_duplicate_security_header_returns_401() -> None:
+    body = b"body"
+    client = create_test_client(max_body_bytes=32)
+    signed_headers = create_signed_headers(body)
+    headers = list(signed_headers.items())
+    headers.append((NONCE_HEADER, TEST_NONCE))
+
+    response = client.post(CI_INGEST_PATH, content=body, headers=headers)
 
     assert response.status_code == 401
     assert response.json() == {"detail": INVALID_SIGNATURE_DETAIL}
@@ -112,7 +267,7 @@ def test_body_at_exact_limit_is_verified_and_replayed() -> None:
     response = client.post(
         CI_INGEST_PATH,
         content=body,
-        headers={CI_INGEST_SIGNATURE_HEADER: create_signature(body)},
+        headers=create_signed_headers(body),
     )
 
     assert response.status_code == 200
@@ -158,13 +313,17 @@ def test_chunked_body_is_hashed_and_replayed_in_original_order() -> None:
             "method": "POST",
             "path": CI_INGEST_PATH,
             "headers": [
-                (CI_INGEST_SIGNATURE_HEADER.lower().encode("ascii"), signature)
+                (CI_INGEST_TIMESTAMP_HEADER, TEST_TIMESTAMP.encode("ascii")),
+                (CI_INGEST_NONCE_HEADER, TEST_NONCE.encode("ascii")),
+                (CI_INGEST_SIGNATURE_HEADER, signature),
             ],
         }
         middleware = CiIngestSecurityMiddleware(
             downstream,
             secret=TEST_SECRET,
             max_body_bytes=len(complete_body),
+            timestamp_tolerance_seconds=300,
+            clock=lambda: float(FIXED_CURRENT_TIME_SECONDS),
         )
 
         await middleware(scope, receive, send)
@@ -181,7 +340,7 @@ def test_body_over_limit_by_one_byte_returns_413() -> None:
     response = client.post(
         CI_INGEST_PATH,
         content=body,
-        headers={CI_INGEST_SIGNATURE_HEADER: create_signature(body)},
+        headers=create_signed_headers(body),
     )
 
     assert response.status_code == 413
