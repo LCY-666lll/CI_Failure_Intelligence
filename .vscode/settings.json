@@ -17,6 +17,20 @@
     "editor.parameterHints.enabled": true,
     "editor.inlayHints.enabled": "on",
     "python.defaultInterpreterPath": "${workspaceFolder}\\backend\\.venv\\Scripts\\python.exe",
+    "terminal.integrated.profiles.windows": {
+        "CFI Windows PowerShell": {
+            "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-NoExit",
+                "-Command",
+                "& '${workspaceFolder}\\backend\\.venv\\Scripts\\Activate.ps1'"
+            ]
+        }
+    },
+    "terminal.integrated.defaultProfile.windows": "CFI Windows PowerShell",
+    "python.terminal.activateEnvironment": false,
     "python.languageServer": "Pylance",
     "python.analysis.typeCheckingMode": "basic",
     "python.analysis.diagnosticMode": "workspace",

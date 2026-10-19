@@ -1,0 +1,80 @@
+# 固定Compose项目名，使容器、网络和volume具有清晰的项目归属。
+name: ci-failure-intelligence
+
+services:
+  redis:
+    image: redis:8.2.9-alpine
+
+    # Docker或Redis意外退出后自动恢复；手工停止时保持停止。
+    restart: unless-stopped
+
+    ports:
+      # 宿主机：只允许本机访问Redis，不向局域网或公网暴露端口。
+      - "127.0.0.1:6379:6379"
+
+    volumes:
+      # 将项目中的Redis配置以只读方式挂载进容器。
+      - ./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+
+      # 将Redis的/data目录保存到Docker持久化volume。
+      - redis_data:/data
+
+    secrets:
+      # 密码文件将在容器中挂载为/run/secrets/redis_password。
+      - redis_password
+
+    # 先由Shell读取Docker secret并生成临时ACL文件，
+    # 再交回官方docker-entrypoint启动Redis。
+    entrypoint:
+      - /bin/sh
+      - -c
+
+    command:
+      - |
+        set -eu
+
+        password="$$(cat /run/secrets/redis_password)"
+
+        printf 'user default off\nuser cfi_ingest on >%s ~cfi:nonce:* +ping +info +set +ttl\n' \
+          "$$password" > /tmp/users.acl
+
+        chmod 600 /tmp/users.acl
+        chown redis:redis /tmp/users.acl
+
+        exec /usr/local/bin/docker-entrypoint.sh \
+          redis-server \
+          /usr/local/etc/redis/redis.conf \
+          --aclfile /tmp/users.acl
+
+    healthcheck:
+      # 使用实际受限用户完成PING，认证或ACL错误也会表现为不健康。
+      test:
+        - CMD-SHELL
+        - >-
+          REDISCLI_AUTH="$$(cat /run/secrets/redis_password)"
+          redis-cli --user cfi_ingest ping | grep -q PONG
+
+      # 每5秒检查一次，每次最多等待3秒。
+      interval: 5s
+      timeout: 3s
+
+      # Redis启动后的前5秒不累计失败次数。
+      start_period: 5s
+
+      # 连续失败5次后将容器标记为unhealthy。
+      retries: 5
+
+    # 最多给Redis 10秒完成关闭和AOF收尾。
+    stop_grace_period: 10s
+
+    # 限制整个容器内存；Redis数据集内部另有64MiB限制。
+    mem_limit: 128m
+
+secrets:
+  redis_password:
+    # 本地开发密钥只从被Git忽略的文件读取。
+    file: ./.secrets/redis_password.txt
+
+volumes:
+  # Docker负责创建和管理Redis持久化volume。
+  redis_data:
