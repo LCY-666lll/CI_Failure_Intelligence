@@ -10,6 +10,11 @@ from collections.abc import Callable
 from starlette import status
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from ci_failure_intelligence.security.nonce_store import (
+    NonceClaimResult,
+    NonceStore,
+    NonceStoreUnavailableError,
+)
 
 
 # 只有这个方法和路径组成的请求需要执行 CI 接入安全检查。
@@ -24,6 +29,9 @@ CI_INGEST_SIGNATURE_HEADER = b"x-cfi-signature-256"
 
 # 所有签名认证失败都返回相同提示，避免暴露具体失败环节。
 INVALID_SIGNATURE_DETAIL = "请求签名无效"
+
+# Redis 无法可靠判断 nonce 时，不允许请求绕过防重放检查。
+SECURITY_SERVICE_UNAVAILABLE_DETAIL = "接入安全服务暂时不可用"
 
 # Body 超过传输层限制时返回的提示。
 BODY_TOO_LARGE_DETAIL = "请求体超过允许的大小"
@@ -220,6 +228,7 @@ class CiIngestSecurityMiddleware:
         secret: bytes,
         max_body_bytes: int,
         timestamp_tolerance_seconds:int,
+        nonce_store:NonceStore,
         clock:Callable[[],float] = time.time
     ) -> None:
         """保存下游应用和已经校验的安全配置。
@@ -229,6 +238,8 @@ class CiIngestSecurityMiddleware:
             secret: 用于计算 HMAC-SHA256 的密钥字节。
             max_body_bytes: 允许读取和暂存的最大 Body 字节数。
             timestamp_tolerance_seconds: 请求时间与服务器时间允许相差的最大秒数。
+            nonce_store: 负责原子占用已通过签名和时间校验的 nonce
+            重复与不可用结果由当前中间件转换为 HTTP 响应。
             clock: 返回当前 Unix 秒级时间的函数。生产环境默认使用
                 time.time 自动化测试可以注入固定时钟。
         """
@@ -244,6 +255,9 @@ class CiIngestSecurityMiddleware:
 
         # 配置层已经保证该值大于 0 且不超过 v1 协议的 300 秒。
         self.timestamp_tolerance_seconds = timestamp_tolerance_seconds
+
+        # 中间件只依赖稳定接口，不知道底层使用 Redis 还是测试假存储。
+        self.nonce_store = nonce_store
 
         # 保存函数对象，请求通过 HMAC 后才调用它取得当时的服务器时间。
         self.clock = clock
@@ -342,6 +356,49 @@ class CiIngestSecurityMiddleware:
                 send=send,
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=INVALID_SIGNATURE_DETAIL,
+            )
+            return
+
+        
+
+        # nonce 格式已经限定为 ASCII 小写 UUID v4，
+        # 并且已经参与 HMAC，因此此时可以安全转换为存储使用的文本。
+        verified_nonce = security_headers.nonce.decode("ascii")
+        try:
+            # 只有 HMAC 和 timestamp 都通过后才访问 nonce 存储。
+            # 不能放在 HMAC 前面，否则攻击者发送大量伪造请求也能写 Redis。
+            # 不能放在 FastAPI 后面，否则相同请求已经进入业务处理，防重放失去意义。
+            claim_result = await self.nonce_store.claim(verified_nonce)
+        except NonceStoreUnavailableError:
+            await self._send_error_response(
+                scope=scope,
+                receive=receive,
+                send=send,
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=SECURITY_SERVICE_UNAVAILABLE_DETAIL,
+            )
+            return
+
+        # Redis 已可靠确认该 nonce 此前存在，说明安全信封被重复使用。
+        if claim_result is NonceClaimResult.DUPLICATE:
+            await self._send_error_response(
+                scope=scope,
+                receive=receive,
+                send=send,
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=INVALID_SIGNATURE_DETAIL,
+            )
+            return
+
+        # 当前协议只允许 CLAIMED 和 DUPLICATE。
+        # 未知实现结果不能被猜测为成功，按存储不可用失败关闭。
+        if claim_result is not NonceClaimResult.CLAIMED:
+            await self._send_error_response(
+                scope=scope,
+                receive=receive,
+                send=send,
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=SECURITY_SERVICE_UNAVAILABLE_DETAIL,
             )
             return
 

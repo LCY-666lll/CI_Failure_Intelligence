@@ -20,7 +20,13 @@ from ci_failure_intelligence.middleware.ci_ingest_security import (
     CI_INGEST_SIGNATURE_HEADER,
     CI_INGEST_TIMESTAMP_HEADER,
     INVALID_SIGNATURE_DETAIL,
+    SECURITY_SERVICE_UNAVAILABLE_DETAIL,
     CiIngestSecurityMiddleware,
+)
+from ci_failure_intelligence.security.nonce_store import (
+    NonceClaimResult,
+    NonceStore,
+    NonceStoreUnavailableError,
 )
 
 
@@ -33,6 +39,28 @@ TEST_NONCE = "550e8400-e29b-41d4-a716-446655440000"
 TIMESTAMP_HEADER = CI_INGEST_TIMESTAMP_HEADER.decode("ascii")
 NONCE_HEADER = CI_INGEST_NONCE_HEADER.decode("ascii")
 SIGNATURE_HEADER = CI_INGEST_SIGNATURE_HEADER.decode("ascii")
+
+
+class StubNonceStore:
+    """按测试指定结果响应，并记录实际收到的 nonce。"""
+
+    def __init__(
+        self,
+        *,
+        result: NonceClaimResult = NonceClaimResult.CLAIMED,
+        error: NonceStoreUnavailableError | None = None,
+    ) -> None:
+        self.result = result
+        self.error = error
+        self.claimed_nonces: list[str] = []
+
+    async def claim(self, nonce: str) -> NonceClaimResult:
+        self.claimed_nonces.append(nonce)
+
+        if self.error is not None:
+            raise self.error
+
+        return self.result
 
 
 def create_signature(
@@ -92,6 +120,7 @@ def create_test_client(
     max_body_bytes: int,
     timestamp_tolerance_seconds: int = 300,
     clock: Callable[[], float] = lambda: float(FIXED_CURRENT_TIME_SECONDS),
+    nonce_store: NonceStore | None = None,
 ) -> Client:
     """创建只用于测试安全中间件的轻量 ASGI 应用。"""
 
@@ -106,6 +135,7 @@ def create_test_client(
         secret=TEST_SECRET,
         max_body_bytes=max_body_bytes,
         timestamp_tolerance_seconds=timestamp_tolerance_seconds,
+        nonce_store=nonce_store or StubNonceStore(),
         clock=clock,
     )
     return TestClient(secured_app)
@@ -233,18 +263,84 @@ def test_timestamp_too_far_in_future_returns_401() -> None:
     assert response.json() == {"detail": INVALID_SIGNATURE_DETAIL}
 
 
+def test_claimed_nonce_reaches_downstream_application() -> None:
+    body = b"body"
+    nonce_store = StubNonceStore(result=NonceClaimResult.CLAIMED)
+    client = create_test_client(
+        max_body_bytes=32,
+        nonce_store=nonce_store,
+    )
+
+    response = client.post(
+        CI_INGEST_PATH,
+        content=body,
+        headers=create_signed_headers(body),
+    )
+
+    assert response.status_code == 200
+    assert nonce_store.claimed_nonces == [TEST_NONCE]
+
+
+def test_duplicate_nonce_returns_401() -> None:
+    body = b"body"
+    nonce_store = StubNonceStore(result=NonceClaimResult.DUPLICATE)
+    client = create_test_client(
+        max_body_bytes=32,
+        nonce_store=nonce_store,
+    )
+
+    response = client.post(
+        CI_INGEST_PATH,
+        content=body,
+        headers=create_signed_headers(body),
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": INVALID_SIGNATURE_DETAIL}
+    assert nonce_store.claimed_nonces == [TEST_NONCE]
+
+
+def test_unavailable_nonce_store_returns_503() -> None:
+    body = b"body"
+    nonce_store = StubNonceStore(
+        error=NonceStoreUnavailableError("store unavailable"),
+    )
+    client = create_test_client(
+        max_body_bytes=32,
+        nonce_store=nonce_store,
+    )
+
+    response = client.post(
+        CI_INGEST_PATH,
+        content=body,
+        headers=create_signed_headers(body),
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": SECURITY_SERVICE_UNAVAILABLE_DETAIL,
+    }
+    assert nonce_store.claimed_nonces == [TEST_NONCE]
+
+
 def test_invalid_hmac_does_not_read_server_clock() -> None:
     def fail_if_called() -> float:
         raise AssertionError("HMAC 失败时不应读取服务器时间")
 
     body = b"body"
-    client = create_test_client(max_body_bytes=32, clock=fail_if_called)
+    nonce_store = StubNonceStore()
+    client = create_test_client(
+        max_body_bytes=32,
+        clock=fail_if_called,
+        nonce_store=nonce_store,
+    )
     headers = create_signed_headers(body)
     headers[SIGNATURE_HEADER] = f"v1={'0' * 64}"
 
     response = client.post(CI_INGEST_PATH, content=body, headers=headers)
 
     assert response.status_code == 401
+    assert nonce_store.claimed_nonces == []
 
 
 def test_duplicate_security_header_returns_401() -> None:
@@ -323,6 +419,7 @@ def test_chunked_body_is_hashed_and_replayed_in_original_order() -> None:
             secret=TEST_SECRET,
             max_body_bytes=len(complete_body),
             timestamp_tolerance_seconds=300,
+            nonce_store=StubNonceStore(),
             clock=lambda: float(FIXED_CURRENT_TIME_SECONDS),
         )
 

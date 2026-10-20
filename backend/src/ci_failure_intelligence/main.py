@@ -9,6 +9,6 @@ from ci_failure_intelligence.core.config import Settings
 # BaseSettings会从环境来源补齐必填字段，
 runtime_settings = Settings()  # pyright: ignore[reportCallIssue]
 
-# 把已经验证的真实配置显式注入应用工厂。
-# Uvicorn后续通过ci_failure_intelligence.main:app取得该实例。
+# 把已经验证的真实配置显式注入应用工厂。。
+# Uvicorn 接管这个 app，启动应用生命周期，随后才处理请求
 app = create_app(settings=runtime_settings)

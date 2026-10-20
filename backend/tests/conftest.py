@@ -9,6 +9,17 @@ from pydantic import SecretStr
 
 from ci_failure_intelligence.application import create_app
 from ci_failure_intelligence.core.config import Settings
+from ci_failure_intelligence.security.nonce_store import (
+    NonceClaimResult,
+    NonceStore,
+)
+
+
+class AlwaysClaimNonceStore:
+    """让与 nonce 无关的应用测试稳定通过安全存储步骤。"""
+
+    async def claim(self, nonce: str) -> NonceClaimResult:
+        return NonceClaimResult.CLAIMED
 
 
 @pytest.fixture
@@ -25,14 +36,28 @@ def test_settings(test_hmac_secret: bytes) -> Settings:
     return Settings(
         ingest_hmac_secret=SecretStr(test_hmac_secret.decode("utf-8")),
         ingest_max_body_bytes=1024 * 1024,
+        redis_password=SecretStr("test-only-redis-password-with-32-bytes"),
     )
 
 
 @pytest.fixture
-def app(test_settings: Settings) -> FastAPI:
+def nonce_store() -> NonceStore:
+    """提供不会访问真实 Redis 的测试 nonce 存储。"""
+
+    return AlwaysClaimNonceStore()
+
+
+@pytest.fixture
+def app(
+    test_settings: Settings,
+    nonce_store: NonceStore,
+) -> FastAPI:
     """使用测试配置创建独立的 FastAPI 应用实例。"""
 
-    return create_app(settings=test_settings)
+    return create_app(
+        settings=test_settings,
+        nonce_store=nonce_store,
+    )
 
 
 @pytest.fixture

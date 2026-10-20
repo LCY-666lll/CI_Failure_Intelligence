@@ -19,6 +19,18 @@ from pydantic_settings import BaseSettings,SettingsConfigDict
 DEFAULT_INGEST_MAX_BODY_BYTES = 8 * 1024 * 1024
 
 DEFAULT_INGEST_TIMESTAMP_TOLERANCE_SECONDS = 300
+# nonce 至少覆盖 timestamp 前后时间窗口，并保留额外边界余量。
+MINIMUM_INGEST_NONCE_TTL_SECONDS = 660
+# 当前默认安全周期同时用于 nonce TTL 和 Redis 最短连续运行时间。
+DEFAULT_INGEST_NONCE_TTL_SECONDS = MINIMUM_INGEST_NONCE_TTL_SECONDS
+
+DEFAULT_REDIS_HOST = "127.0.0.1"
+DEFAULT_REDIS_PORT = 6379
+DEFAULT_REDIS_USERNAME = "cfi_ingest"
+DEFAULT_REDIS_DATABASE = 0
+DEFAULT_REDIS_CONNECT_TIMEOUT_SECONDS = 1.0
+DEFAULT_REDIS_SOCKET_TIMEOUT_SECONDS = 1.0
+DEFAULT_REDIS_MAX_CONNECTIONS = 10
 
 # 继承 BaseSettings：获得读取运行配置的能力，把环境变量和 .env 作为字段数据来源
 class Settings(BaseSettings):
@@ -50,6 +62,61 @@ class Settings(BaseSettings):
         default=DEFAULT_INGEST_TIMESTAMP_TOLERANCE_SECONDS,
         gt = 0,
         le = DEFAULT_INGEST_TIMESTAMP_TOLERANCE_SECONDS
+    )
+
+    # 同一个安全周期既控制 nonce 在 Redis 中的保存时间，
+    # 也控制 Redis 新进程允许接收 CI 请求前必须连续运行的时间。
+    ingest_nonce_ttl_seconds: int = Field(
+        default=DEFAULT_INGEST_NONCE_TTL_SECONDS,
+        ge=MINIMUM_INGEST_NONCE_TTL_SECONDS,
+    )
+
+    redis_host:str = Field(
+        default=DEFAULT_REDIS_HOST,
+        min_length = 1
+    )
+
+    # Redis端口必须位于合法的TCP端口范围。
+    redis_port: int = Field(
+        default=DEFAULT_REDIS_PORT,
+        ge=1,
+        le=65535,
+    )
+
+    # 使用Compose中创建的受限ACL用户，不使用default用户。
+    redis_username: str = Field(
+        default=DEFAULT_REDIS_USERNAME,
+        min_length=1,
+    )
+
+    # Redis密码必须由运行环境提供，并在普通打印中遮蔽真实内容。
+    redis_password: SecretStr
+
+    # 第一版只使用Redis逻辑数据库0。
+    redis_database: int = Field(
+        default=DEFAULT_REDIS_DATABASE,
+        ge=0,
+    )
+
+    # 限制建立Redis TCP连接的最长等待时间。
+    redis_connect_timeout_seconds: float = Field(
+        default=DEFAULT_REDIS_CONNECT_TIMEOUT_SECONDS,
+        gt=0,
+        le=10,
+    )
+
+    # 限制单条Redis命令等待响应的最长时间。
+    redis_socket_timeout_seconds: float = Field(
+        default=DEFAULT_REDIS_SOCKET_TIMEOUT_SECONDS,
+        gt=0,
+        le=10,
+    )
+
+    # 限制当前后端进程的Redis连接池规模。
+    redis_max_connections: int = Field(
+        default=DEFAULT_REDIS_MAX_CONNECTIONS,
+        ge=1,
+        le=100,
     )
 
     # 向 Pydantic 登记：处理 ingest_hmac_secret 字段时，调用下面这个方法检查它。
@@ -84,5 +151,31 @@ class Settings(BaseSettings):
 
         if len(secret_bytes) < 32:
             raise ValueError("CI 接入 HMAC 密钥的 UTF-8 编码长度必须至少为 32 字节")
+
+        return value
+
+    # Redis密码使用独立校验器，错误信息可以准确指出具体配置。
+    @field_validator("redis_password")
+    @classmethod
+    def validate_redis_password(
+        cls,
+        value: SecretStr,
+    ) -> SecretStr:
+        """确保 Redis 密码具有足够的 UTF-8 字节长度。
+
+        Args:
+            value: 从运行环境读取并转换为 SecretStr 的 Redis 密码。
+
+        Returns:
+            SecretStr: 通过最小字节长度校验的原始密码对象。
+
+        Raises:
+            ValueError: 密码经过 UTF-8 编码后不足 32 字节。
+        """
+
+        password_bytes = value.get_secret_value().encode("utf-8")
+
+        if len(password_bytes) < 32:
+            raise ValueError("Redis 密码的 UTF-8 编码长度必须至少为 32 字节")
 
         return value
