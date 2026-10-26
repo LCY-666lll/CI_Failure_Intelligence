@@ -11,9 +11,10 @@
 
 # field_validator 用来登记一个字段校验函数。
 from pydantic import Field, SecretStr, field_validator
+
 # BaseSettings 负责从环境变量和 .env 创建配置对象。
 # SettingsConfigDict 负责声明读取环境变量时采用的规则。
-from pydantic_settings import BaseSettings,SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 DEFAULT_INGEST_MAX_BODY_BYTES = 8 * 1024 * 1024
@@ -31,6 +32,20 @@ DEFAULT_REDIS_DATABASE = 0
 DEFAULT_REDIS_CONNECT_TIMEOUT_SECONDS = 1.0
 DEFAULT_REDIS_SOCKET_TIMEOUT_SECONDS = 1.0
 DEFAULT_REDIS_MAX_CONNECTIONS = 10
+
+# PostgreSQL 默认通过 Docker 映射端口供本机 FastAPI 访问。
+DEFAULT_POSTGRES_HOST = "127.0.0.1"
+DEFAULT_POSTGRES_PORT = 5432
+DEFAULT_POSTGRES_DATABASE = "ci_failure_intelligence"
+DEFAULT_POSTGRES_USERNAME = "cfi_app"
+
+# 第一版限制单个后端进程能够占用的数据库连接数量。
+DEFAULT_POSTGRES_POOL_SIZE = 5
+DEFAULT_POSTGRES_MAX_OVERFLOW = 5
+
+# 数据库不可达时快速失败，避免请求长时间卡住。
+DEFAULT_POSTGRES_CONNECT_TIMEOUT_SECONDS = 3
+
 
 # 继承 BaseSettings：获得读取运行配置的能力，把环境变量和 .env 作为字段数据来源
 class Settings(BaseSettings):
@@ -58,10 +73,10 @@ class Settings(BaseSettings):
     )
 
     # 控制请求 timestamp 与服务器当前时间允许相差的最大秒数。
-    ingest_timestamp_tolerance_seconds:int = Field(
+    ingest_timestamp_tolerance_seconds: int = Field(
         default=DEFAULT_INGEST_TIMESTAMP_TOLERANCE_SECONDS,
-        gt = 0,
-        le = DEFAULT_INGEST_TIMESTAMP_TOLERANCE_SECONDS
+        gt=0,
+        le=DEFAULT_INGEST_TIMESTAMP_TOLERANCE_SECONDS,
     )
 
     # 同一个安全周期既控制 nonce 在 Redis 中的保存时间，
@@ -71,10 +86,7 @@ class Settings(BaseSettings):
         ge=MINIMUM_INGEST_NONCE_TTL_SECONDS,
     )
 
-    redis_host:str = Field(
-        default=DEFAULT_REDIS_HOST,
-        min_length = 1
-    )
+    redis_host: str = Field(default=DEFAULT_REDIS_HOST, min_length=1)
 
     # Redis端口必须位于合法的TCP端口范围。
     redis_port: int = Field(
@@ -117,6 +129,55 @@ class Settings(BaseSettings):
         default=DEFAULT_REDIS_MAX_CONNECTIONS,
         ge=1,
         le=100,
+    )
+
+    # Windows 上运行的 FastAPI 通过本机映射端口连接 Docker PostgreSQL。
+    postgres_host: str = Field(
+        default=DEFAULT_POSTGRES_HOST,
+        min_length=1,
+    )
+
+    # PostgreSQL 端口必须位于合法的 TCP 端口范围。
+    postgres_port: int = Field(
+        default=DEFAULT_POSTGRES_PORT,
+        ge=1,
+        le=65535,
+    )
+
+    # 指定 CI Failure Intelligence 使用的正式项目数据库。
+    postgres_database: str = Field(
+        default=DEFAULT_POSTGRES_DATABASE,
+        min_length=1,
+    )
+
+    # FastAPI 使用受限应用账号，不使用数据库超级用户。
+    postgres_username: str = Field(
+        default=DEFAULT_POSTGRES_USERNAME,
+        min_length=1,
+    )
+
+    # 数据库密码必须由运行环境提供，打印 Settings 时自动遮蔽。
+    postgres_password: SecretStr
+
+    # 连接池长期保留的数据库连接数量。
+    postgres_pool_size: int = Field(
+        default=DEFAULT_POSTGRES_POOL_SIZE,
+        ge=1,
+        le=20,
+    )
+
+    # 连接池用尽时允许临时增加的连接数量。
+    postgres_max_overflow: int = Field(
+        default=DEFAULT_POSTGRES_MAX_OVERFLOW,
+        ge=0,
+        le=20,
+    )
+
+    # 建立 PostgreSQL 连接允许等待的最长秒数。
+    postgres_connect_timeout_seconds: int = Field(
+        default=DEFAULT_POSTGRES_CONNECT_TIMEOUT_SECONDS,
+        ge=1,
+        le=30,
     )
 
     # 向 Pydantic 登记：处理 ingest_hmac_secret 字段时，调用下面这个方法检查它。
@@ -177,5 +238,29 @@ class Settings(BaseSettings):
 
         if len(password_bytes) < 32:
             raise ValueError("Redis 密码的 UTF-8 编码长度必须至少为 32 字节")
+
+        return value
+
+    @field_validator("postgres_password")
+    @classmethod
+    def validate_postgres_password(
+        cls,
+        value: SecretStr,
+    ) -> SecretStr:
+        """确保 PostgreSQL 应用密码具有足够的 UTF-8 字节长度。
+
+        Args:
+            value: 从运行环境读取并转换为 SecretStr 的数据库密码。
+
+        Returns:
+            SecretStr: 通过最小字节长度校验的原始密码对象。
+
+        Raises:
+            ValueError: 密码经过 UTF-8 编码后不足 32 字节。
+        """
+
+        password_bytes = value.get_secret_value().encode("utf-8")
+        if len(password_bytes) < 32:
+            raise ValueError("PostgreSQL 应用密码的 UTF-8 编码长度必须至少为 32 字节")
 
         return value

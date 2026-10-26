@@ -5,10 +5,16 @@ from typing import cast
 import pytest
 from fastapi.testclient import TestClient
 from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+)
 
 import ci_failure_intelligence.application as application_module
 from ci_failure_intelligence.core.config import Settings
 from ci_failure_intelligence.infrastructure.redis_nonce_store import RedisNonceStore
+from ci_failure_intelligence.security.nonce_store import NonceStore
 
 
 class FakeManagedRedisClient:
@@ -19,6 +25,16 @@ class FakeManagedRedisClient:
 
     async def aclose(self) -> None:
         self.closed = True
+
+
+class FakeDatabaseEngine:
+    """记录应用生命周期是否释放了数据库 Engine。"""
+
+    def __init__(self) -> None:
+        self.disposed = False
+
+    async def dispose(self) -> None:
+        self.disposed = True
 
 
 def test_application_lifespan_closes_factory_created_redis_client(
@@ -48,3 +64,80 @@ def test_application_lifespan_closes_factory_created_redis_client(
         assert fake_client.closed is False
 
     assert fake_client.closed is True
+
+
+def test_application_owns_and_disposes_factory_created_database_engine(
+    test_settings: Settings,
+    nonce_store: NonceStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_engine = FakeDatabaseEngine()
+    fake_session_factory = object()
+
+    def fake_create_database_engine(_: Settings) -> AsyncEngine:
+        return cast(AsyncEngine, fake_engine)
+
+    def fake_create_database_session_factory(
+        engine: AsyncEngine,
+    ) -> async_sessionmaker[AsyncSession]:
+        assert engine is fake_engine
+        return cast(async_sessionmaker[AsyncSession], fake_session_factory)
+
+    monkeypatch.setattr(
+        application_module,
+        "create_database_engine",
+        fake_create_database_engine,
+    )
+    monkeypatch.setattr(
+        application_module,
+        "create_database_session_factory",
+        fake_create_database_session_factory,
+    )
+
+    app = application_module.create_app(
+        settings=test_settings,
+        nonce_store=nonce_store,
+    )
+
+    assert app.state.database_engine is fake_engine
+    assert app.state.database_session_factory is fake_session_factory
+    assert fake_engine.disposed is False
+
+    with TestClient(app) as client:
+        assert client.get("/health/live").status_code == 200
+        assert fake_engine.disposed is False
+
+    assert fake_engine.disposed is True
+
+
+def test_application_does_not_dispose_injected_database_engine(
+    test_settings: Settings,
+    nonce_store: NonceStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    injected_engine = FakeDatabaseEngine()
+    fake_session_factory = object()
+
+    def fake_create_database_session_factory(
+        engine: AsyncEngine,
+    ) -> async_sessionmaker[AsyncSession]:
+        assert engine is injected_engine
+        return cast(async_sessionmaker[AsyncSession], fake_session_factory)
+
+    monkeypatch.setattr(
+        application_module,
+        "create_database_session_factory",
+        fake_create_database_session_factory,
+    )
+
+    app = application_module.create_app(
+        settings=test_settings,
+        nonce_store=nonce_store,
+        database_engine=cast(AsyncEngine, injected_engine),
+    )
+
+    with TestClient(app) as client:
+        assert client.get("/health/live").status_code == 200
+
+    assert app.state.database_session_factory is fake_session_factory
+    assert injected_engine.disposed is False

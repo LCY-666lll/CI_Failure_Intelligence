@@ -37,6 +37,7 @@ def test_settings(test_hmac_secret: bytes) -> Settings:
         ingest_hmac_secret=SecretStr(test_hmac_secret.decode("utf-8")),
         ingest_max_body_bytes=1024 * 1024,
         redis_password=SecretStr("test-only-redis-password-with-32-bytes"),
+        postgres_password=SecretStr("test-only-postgres-password-with-32-bytes"),
     )
 
 

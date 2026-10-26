@@ -8,6 +8,7 @@ from ci_failure_intelligence.core.config import Settings
 
 TEST_SECRET = SecretStr("test-only-secret-with-at-least-32-bytes")
 TEST_REDIS_PASSWORD = SecretStr("test-only-redis-password-with-32-bytes")
+TEST_POSTGRES_PASSWORD = SecretStr("test-only-postgres-password-with-32-bytes")
 
 
 def create_test_settings(**overrides: object) -> Settings:
@@ -16,6 +17,7 @@ def create_test_settings(**overrides: object) -> Settings:
     settings_data: dict[str, object] = {
         "ingest_hmac_secret": TEST_SECRET,
         "redis_password": TEST_REDIS_PASSWORD,
+        "postgres_password": TEST_POSTGRES_PASSWORD,
     }
     settings_data.update(overrides)
 
@@ -84,6 +86,47 @@ def test_redis_connection_uses_safe_defaults() -> None:
 def test_redis_password_rejects_short_value() -> None:
     with pytest.raises(ValidationError):
         create_test_settings(redis_password=SecretStr("too-short"))
+
+
+def test_postgres_connection_uses_safe_defaults() -> None:
+    settings = create_test_settings()
+
+    assert settings.postgres_host == "127.0.0.1"
+    assert settings.postgres_port == 5432
+    assert settings.postgres_database == "ci_failure_intelligence"
+    assert settings.postgres_username == "cfi_app"
+    assert settings.postgres_pool_size == 5
+    assert settings.postgres_max_overflow == 5
+    assert settings.postgres_connect_timeout_seconds == 3
+    assert str(settings.postgres_password) == "**********"
+
+
+def test_postgres_password_rejects_short_value() -> None:
+    with pytest.raises(ValidationError):
+        create_test_settings(
+            postgres_password=SecretStr("too-short"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("postgres_port", 0),
+        ("postgres_port", 65536),
+        ("postgres_pool_size", 0),
+        ("postgres_pool_size", 21),
+        ("postgres_max_overflow", -1),
+        ("postgres_max_overflow", 21),
+        ("postgres_connect_timeout_seconds", 0),
+        ("postgres_connect_timeout_seconds", 31),
+    ],
+)
+def test_postgres_connection_rejects_invalid_boundaries(
+    field_name: str,
+    invalid_value: int,
+) -> None:
+    with pytest.raises(ValidationError):
+        create_test_settings(**{field_name: invalid_value})
 
 
 @pytest.mark.parametrize(

@@ -2,10 +2,12 @@
 
 # 给下面带 yield 的异步 lifespan() 写返回类型
 from collections.abc import AsyncGenerator
+
 # 把“yield 之前做启动工作、之后做关闭工作”的异步函数变成上下文管理器
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ci_failure_intelligence.api.router import api_router
 from ci_failure_intelligence.core.config import Settings
@@ -19,13 +21,19 @@ from ci_failure_intelligence.middleware.ci_ingest_security import (
     CiIngestSecurityMiddleware,
 )
 from ci_failure_intelligence.security.nonce_store import NonceStore
+from ci_failure_intelligence.infrastructure.database import (
+    create_database_engine,
+    create_database_session_factory,
+)
+
 
 def create_app(
     # 星号表示后面的参数必须使用 settings=... 的名字传入，
     # 避免调用者只传一个位置参数却看不出这个对象代表什么。
     *,
     settings: Settings,
-    nonce_store:NonceStore | None = None,
+    nonce_store: NonceStore | None = None,
+    database_engine: AsyncEngine | None = None,
 ) -> FastAPI:
     """使用已经校验的运行配置创建独立 FastAPI 应用。
 
@@ -35,6 +43,9 @@ def create_app(
         nonce_store: 可选的 nonce 存储实现。
             未提供时创建真实 Redis 客户端和 RedisNonceStore；
             自动化测试可以注入假存储，避免访问本地或生产 Redis。
+        database_engine: 可选的异步数据库 Engine。
+            未提供时根据 Settings 创建并由应用生命周期释放；
+            自动化测试可以注入自己的 Engine。
 
     Returns:
         FastAPI: 已保存当前配置并完成路由注册的应用实例。
@@ -55,6 +66,20 @@ def create_app(
         # 测试或其他调用方可以提供符合 NonceStore 协议的实现。
         resolved_nonce_store = nonce_store
 
+    # 哪个Engine是本函数创建、需要本函数关闭的
+    managed_database_engine = None
+
+    if database_engine is None:
+        # 正常运行时由应用工厂创建并管理整个进程共享的 Engine。
+        managed_database_engine = create_database_engine(settings)
+        resolved_database_engine = managed_database_engine
+    else:
+        # 调用方注入的 Engine 不属于应用工厂，关闭责任仍由调用方承担。
+        resolved_database_engine = database_engine
+
+    # Session工厂本身不持有独立连接，可由整个应用共享。
+    database_session_factory = create_database_session_factory(resolved_database_engine)
+
     # 进入 async with
     # → 执行到 yield
     # → FastAPI 开始服务
@@ -64,7 +89,7 @@ def create_app(
     # → finally 执行 aclose()
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
-        """在应用退出时释放由应用工厂创建的 Redis 客户端。
+        """在应用退出时释放由应用工厂创建的共享基础设施资源。
 
         Yields:
             None: `yield` 期间 FastAPI 可以持续处理 HTTP 请求。
@@ -74,25 +99,26 @@ def create_app(
             # 先暂停这个函数，把程序控制权交给 FastAPI；等 FastAPI 要关闭时，再回来继续执行。
             # Redis 客户端采用按需连接，因此这里不执行强制 PING。
             yield
+
+        # 尝试释放数据库 → 无论结果怎样 → 继续释放Redis
         finally:
-            # yield 之后属于应用关闭阶段。
-            # 只有真实运行路径创建了客户端，测试注入路径不会进入此分支。
-            if managed_redis_client is not None:
-                await managed_redis_client.aclose()       
-    
+            try:
+                if managed_database_engine is not None:
+                    await managed_database_engine.dispose()
+            finally:
+                # yield 之后属于应用关闭阶段。
+                # 只有真实运行路径创建了客户端，测试注入路径不会进入此分支。
+                if managed_redis_client is not None:
+                    await managed_redis_client.aclose()
 
     # 每次调用都创建新的应用实例，因此不同测试可以使用不同配置。
     app = FastAPI(
-        title="CI Failure Intelligence API",
-        version="0.1.0",
-        lifespan=lifespan
+        title="CI Failure Intelligence API", version="0.1.0", lifespan=lifespan
     )
 
     # 当前环境的真实密钥字节
     # SecretStr 只负责避免密钥在日志和调试输出中被直接显示。
-    ingest_hmac_secret = (
-        settings.ingest_hmac_secret.get_secret_value().encode("utf-8")
-    )
+    ingest_hmac_secret = settings.ingest_hmac_secret.get_secret_value().encode("utf-8")
 
     # 传递中间件类：add_middleware(self, middleware_class, *args, **kwargs)
     app.add_middleware(
@@ -108,6 +134,13 @@ def create_app(
     # app.state → 属于某一个FastAPI实例 → 每次create_app()可以拥有不同配置
     app.state.settings = settings
     app.state.nonce_store = resolved_nonce_store
+
+    # Engine属于连接池级共享资源，不能被当作单条请求的Session。
+    app.state.database_engine = resolved_database_engine
+
+    # 后续数据库依赖会为每次业务操作调用该工厂创建独立Session。
+    app.state.database_session_factory = database_session_factory
+
 
     # 把已经汇总的健康检查和CI接入路由注册到当前应用实例。
     app.include_router(api_router)
