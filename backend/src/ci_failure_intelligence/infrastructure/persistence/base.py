@@ -6,7 +6,6 @@ from sqlalchemy import MetaData
 # DeclarativeBase 让继承它的 Python 类能够声明为 SQLAlchemy ORM 模型。
 from sqlalchemy.orm import DeclarativeBase
 
-
 # 统一生成约束和索引名称，让数据库错误和 Alembic 迁移具有稳定名称。
 CONSTRAINT_NAMING_CONVENTION = {
     # ix 表示普通索引；名称包含索引首列的标签。

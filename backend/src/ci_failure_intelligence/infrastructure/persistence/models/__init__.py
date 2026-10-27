@@ -5,6 +5,5 @@ from ci_failure_intelligence.infrastructure.persistence.models.ci_failure_event 
     CiFailureEventModel,
 )
 
-
 # 明确声明 models 包对外公开的 ORM 模型。
 __all__ = ["CiFailureEventModel"]

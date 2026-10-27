@@ -2,11 +2,10 @@
 
 from typing import cast
 
-from sqlalchemy import CheckConstraint, Table, UniqueConstraint
-
 from ci_failure_intelligence.infrastructure.persistence.models.ci_failure_event import (
     CiFailureEventModel,
 )
+from sqlalchemy import CheckConstraint, Table, UniqueConstraint
 
 
 def get_event_table() -> Table:
