@@ -8,10 +8,10 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from ci_failure_intelligence.core.config import Settings
+from ci_failure_intelligence.core.config import PostgresSettings
 
 
-def create_database_url(settings: Settings) -> URL:
+def create_database_url(settings: PostgresSettings) -> URL:
     """根据已校验配置创建 PostgreSQL 异步连接地址。
 
     使用 SQLAlchemy URL 对象分别保存连接参数，避免手工拼接时遗漏
@@ -38,7 +38,7 @@ def create_database_url(settings: Settings) -> URL:
     )
 
 
-def create_database_engine(settings: Settings) -> AsyncEngine:
+def create_database_engine(settings: PostgresSettings) -> AsyncEngine:
     """创建供整个 FastAPI 进程共享的 PostgreSQL 异步 Engine，不会立即联网。
 
     创建 Engine 时只建立连接池管理对象，不会立即连接 PostgreSQL。

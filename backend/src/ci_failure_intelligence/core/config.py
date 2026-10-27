@@ -47,10 +47,10 @@ DEFAULT_POSTGRES_MAX_OVERFLOW = 5
 DEFAULT_POSTGRES_CONNECT_TIMEOUT_SECONDS = 3
 
 
-# 继承 BaseSettings：获得读取运行配置的能力，把环境变量和 .env 作为字段数据来源
-class Settings(BaseSettings):
-    """集中描述后端从环境变量读取的运行配置。"""
+class PostgresSettings(BaseSettings):
+    """描述数据库工具和后端共同使用的 PostgreSQL 配置。"""
 
+    # PostgreSQL 专用配置和完整后端配置共用同一套环境变量读取规则。
     # 告诉 BaseSettings：按什么规则寻找和读取配置
     model_config = SettingsConfigDict(
         # 本地开发时读取当前工作目录中的 .env
@@ -62,6 +62,83 @@ class Settings(BaseSettings):
         # .env 还有当前类没声明的配置，就忽略，不会导致报错
         extra="ignore",
     )
+
+    # Windows 上运行的进程通过本机映射端口连接 Docker PostgreSQL。
+    postgres_host: str = Field(
+        default=DEFAULT_POSTGRES_HOST,
+        min_length=1,
+    )
+
+    postgres_port: int = Field(
+        default=DEFAULT_POSTGRES_PORT,
+        ge=1,
+        le=65535,
+    )
+
+    postgres_database: str = Field(
+        default=DEFAULT_POSTGRES_DATABASE,
+        min_length=1,
+    )
+
+    # 应用和迁移目前使用受限账号 cfi_app，不使用数据库超级用户。
+    postgres_username: str = Field(
+        default=DEFAULT_POSTGRES_USERNAME,
+        min_length=1,
+    )
+
+    # 没有默认密码：运行环境必须显式提供 CFI_POSTGRES_PASSWORD。
+    postgres_password: SecretStr
+
+    postgres_pool_size: int = Field(
+        default=DEFAULT_POSTGRES_POOL_SIZE,
+        ge=1,
+        le=20,
+    )
+
+    postgres_max_overflow: int = Field(
+        default=DEFAULT_POSTGRES_MAX_OVERFLOW,
+        ge=0,
+        le=20,
+    )
+
+    postgres_connect_timeout_seconds: int = Field(
+        default=DEFAULT_POSTGRES_CONNECT_TIMEOUT_SECONDS,
+        ge=1,
+        le=30,
+    )
+
+    @field_validator("postgres_password")
+    @classmethod
+    def validate_postgres_password(
+        cls,
+        value: SecretStr,
+    ) -> SecretStr:
+        """确保 PostgreSQL 应用密码具有足够的 UTF-8 字节长度。
+
+        Args:
+            value: 从运行环境读取并转换为 SecretStr 的数据库密码。
+
+        Returns:
+            SecretStr: 通过最小字节长度校验的原始密码对象。
+
+        Raises:
+            ValueError: 密码经过 UTF-8 编码后不足 32 字节。
+        """
+
+        password_bytes = value.get_secret_value().encode("utf-8")
+
+        if len(password_bytes) < 32:
+            raise ValueError("PostgreSQL 应用密码的 UTF-8 编码长度必须至少为 32 字节")
+
+        return value
+
+
+# 继承 BaseSettings：获得读取运行配置的能力，把环境变量和 .env 作为字段数据来源
+class Settings(PostgresSettings):
+    """集中描述完整 FastAPI 后端的运行配置:
+    Settings 自己声明 HMAC 和 Redis 字段 +
+    继承 PostgresSettings 中的数据库字段 = FastAPI 完整运行配置
+    """
 
     # 打印时遮住内容的字符串，SecretStr：让打印配置对象时只显示星号
     ingest_hmac_secret: SecretStr
@@ -131,55 +208,6 @@ class Settings(BaseSettings):
         le=100,
     )
 
-    # Windows 上运行的 FastAPI 通过本机映射端口连接 Docker PostgreSQL。
-    postgres_host: str = Field(
-        default=DEFAULT_POSTGRES_HOST,
-        min_length=1,
-    )
-
-    # PostgreSQL 端口必须位于合法的 TCP 端口范围。
-    postgres_port: int = Field(
-        default=DEFAULT_POSTGRES_PORT,
-        ge=1,
-        le=65535,
-    )
-
-    # 指定 CI Failure Intelligence 使用的正式项目数据库。
-    postgres_database: str = Field(
-        default=DEFAULT_POSTGRES_DATABASE,
-        min_length=1,
-    )
-
-    # FastAPI 使用受限应用账号，不使用数据库超级用户。
-    postgres_username: str = Field(
-        default=DEFAULT_POSTGRES_USERNAME,
-        min_length=1,
-    )
-
-    # 数据库密码必须由运行环境提供，打印 Settings 时自动遮蔽。
-    postgres_password: SecretStr
-
-    # 连接池长期保留的数据库连接数量。
-    postgres_pool_size: int = Field(
-        default=DEFAULT_POSTGRES_POOL_SIZE,
-        ge=1,
-        le=20,
-    )
-
-    # 连接池用尽时允许临时增加的连接数量。
-    postgres_max_overflow: int = Field(
-        default=DEFAULT_POSTGRES_MAX_OVERFLOW,
-        ge=0,
-        le=20,
-    )
-
-    # 建立 PostgreSQL 连接允许等待的最长秒数。
-    postgres_connect_timeout_seconds: int = Field(
-        default=DEFAULT_POSTGRES_CONNECT_TIMEOUT_SECONDS,
-        ge=1,
-        le=30,
-    )
-
     # 向 Pydantic 登记：处理 ingest_hmac_secret 字段时，调用下面这个方法检查它。
     @field_validator("ingest_hmac_secret")
     # 表示这是类方法：第一个参数由 Python 自动传入当前类 Settings
@@ -238,29 +266,5 @@ class Settings(BaseSettings):
 
         if len(password_bytes) < 32:
             raise ValueError("Redis 密码的 UTF-8 编码长度必须至少为 32 字节")
-
-        return value
-
-    @field_validator("postgres_password")
-    @classmethod
-    def validate_postgres_password(
-        cls,
-        value: SecretStr,
-    ) -> SecretStr:
-        """确保 PostgreSQL 应用密码具有足够的 UTF-8 字节长度。
-
-        Args:
-            value: 从运行环境读取并转换为 SecretStr 的数据库密码。
-
-        Returns:
-            SecretStr: 通过最小字节长度校验的原始密码对象。
-
-        Raises:
-            ValueError: 密码经过 UTF-8 编码后不足 32 字节。
-        """
-
-        password_bytes = value.get_secret_value().encode("utf-8")
-        if len(password_bytes) < 32:
-            raise ValueError("PostgreSQL 应用密码的 UTF-8 编码长度必须至少为 32 字节")
 
         return value

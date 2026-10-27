@@ -95,3 +95,29 @@ def test_empty_junit_xml_is_rejected() -> None:
 
     with pytest.raises(ValidationError):
         CiFailureIngestRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("section", "field_name", "invalid_value"),
+    [
+        (
+            "repository",
+            "github_repository_id",
+            9_223_372_036_854_775_808,
+        ),
+        ("run", "run_id", 9_223_372_036_854_775_808),
+        ("run", "run_attempt", 2_147_483_648),
+    ],
+)
+def test_database_integer_overflow_is_rejected(
+    section: str,
+    field_name: str,
+    invalid_value: int,
+) -> None:
+    """请求整数不得超过对应 PostgreSQL 字段可以存储的范围。"""
+
+    payload = build_valid_payload()
+    payload[section][field_name] = invalid_value
+
+    with pytest.raises(ValidationError):
+        CiFailureIngestRequest.model_validate(payload)

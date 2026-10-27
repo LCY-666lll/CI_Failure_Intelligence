@@ -2,13 +2,26 @@
 
 import pytest
 from pydantic import SecretStr, ValidationError
+from pydantic_settings import SettingsConfigDict
 
-from ci_failure_intelligence.core.config import Settings
+from ci_failure_intelligence.core.config import PostgresSettings, Settings
 
 
 TEST_SECRET = SecretStr("test-only-secret-with-at-least-32-bytes")
 TEST_REDIS_PASSWORD = SecretStr("test-only-redis-password-with-32-bytes")
 TEST_POSTGRES_PASSWORD = SecretStr("test-only-postgres-password-with-32-bytes")
+
+
+class IsolatedPostgresSettings(PostgresSettings):
+    """关闭 `.env`，只验证测试显式提供的 PostgreSQL 配置。"""
+
+    model_config = SettingsConfigDict(env_file=None)
+
+
+class IsolatedSettings(Settings):
+    """关闭 `.env`，只验证测试显式提供的完整后端配置。"""
+
+    model_config = SettingsConfigDict(env_file=None)
 
 
 def create_test_settings(**overrides: object) -> Settings:
@@ -22,6 +35,34 @@ def create_test_settings(**overrides: object) -> Settings:
     settings_data.update(overrides)
 
     return Settings.model_validate(settings_data)
+
+
+def test_postgres_settings_does_not_require_unrelated_security_secrets() -> None:
+    """数据库专用配置不应依赖 HMAC 或 Redis 密钥。"""
+
+    settings = IsolatedPostgresSettings.model_validate(
+        {"postgres_password": TEST_POSTGRES_PASSWORD}
+    )
+
+    assert settings.postgres_database == "ci_failure_intelligence"
+    assert settings.postgres_username == "cfi_app"
+
+
+def test_full_settings_still_requires_ingest_and_redis_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FastAPI 完整配置不能因拆分数据库配置而放松安全要求。"""
+
+    # 禁用进程环境变量和 .env，确保测试只观察类本身的必填字段。
+    monkeypatch.delenv("CFI_INGEST_HMAC_SECRET", raising=False)
+    monkeypatch.delenv("CFI_REDIS_PASSWORD", raising=False)
+
+    with pytest.raises(ValidationError) as captured_error:
+        IsolatedSettings.model_validate({"postgres_password": TEST_POSTGRES_PASSWORD})
+
+    missing_fields = {error["loc"] for error in captured_error.value.errors()}
+    assert ("ingest_hmac_secret",) in missing_fields
+    assert ("redis_password",) in missing_fields
 
 
 def test_timestamp_tolerance_defaults_to_300_seconds() -> None:
