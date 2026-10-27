@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Evidence-driven CI failure clustering, retrieval, and diagnosis platform"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "alembic>=1.20,<1.21",
     "fastapi>=0.142.3,<0.143.0",
     "psycopg[binary]>=3.2,<3.4",
     "pydantic>=2.14.1,<2.15.0",
