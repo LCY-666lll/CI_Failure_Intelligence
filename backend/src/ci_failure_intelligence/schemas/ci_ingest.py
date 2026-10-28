@@ -1,6 +1,7 @@
 """定义 CI 失败接入接口使用的数据契约。"""
 
 from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 # PostgreSQL bigint 和 integer 的最大存储范围。
@@ -66,12 +67,13 @@ class CiFailureIngestRequest(BaseModel):
 
 
 class CiFailureIngestResponse(BaseModel):
-    """描述 CI 失败请求通过数据契约校验后的响应。"""
+    """描述已经可靠保存的 CI 失败接入响应。"""
 
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    # 表示该字段只能是："validated",后面的是默认值
-    status: Literal["validated"] = "validated"
+    # accepted 表示原始 CI 事件已经提交到 PostgreSQL，
+    # 但不表示 JUnit 已解析或诊断任务已经完成。
+    status: Literal["accepted"] = "accepted"
     run_id: int = Field(gt=0)
     run_attempt: int = Field(ge=1)
     job_key: str = Field(min_length=1, max_length=255)

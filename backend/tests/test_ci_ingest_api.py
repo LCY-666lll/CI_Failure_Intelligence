@@ -6,8 +6,8 @@ import json
 import time
 from typing import Any
 
-from fastapi.testclient import TestClient
-
+import ci_failure_intelligence.api.routes.ci_ingest as ci_ingest_route
+import pytest
 from ci_failure_intelligence.middleware.ci_ingest_security import (
     CI_INGEST_NONCE_HEADER,
     CI_INGEST_PATH,
@@ -15,7 +15,15 @@ from ci_failure_intelligence.middleware.ci_ingest_security import (
     CI_INGEST_TIMESTAMP_HEADER,
     INVALID_SIGNATURE_DETAIL,
 )
-
+from ci_failure_intelligence.schemas.ci_ingest import CiFailureIngestRequest
+from ci_failure_intelligence.service.ci_failure_persistence import (
+    CiFailurePayloadConflictError,
+    CiFailurePersistenceResult,
+    CiFailurePersistenceStatus,
+    CiFailurePersistenceUnavailableError,
+)
+from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 TEST_NONCE = "550e8400-e29b-41d4-a716-446655440000"
 
@@ -78,11 +86,31 @@ def create_signed_headers(body: bytes, secret: bytes) -> dict[str, str]:
     }
 
 
-def test_valid_ci_failure_request_returns_validated_response(
+def test_valid_ci_failure_request_returns_accepted_response_after_persistence(
     client: TestClient,
     test_hmac_secret: bytes,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """合法请求应返回校验成功状态和对应的运行身份。"""
+    """事务持久化成功后应返回 accepted 和对应的运行身份。"""
+
+    persisted_requests: list[CiFailureIngestRequest] = []
+
+    async def fake_persist_ci_failure_event(
+        _: AsyncSession,
+        ingest_request: CiFailureIngestRequest,
+    ) -> CiFailurePersistenceResult:
+        persisted_requests.append(ingest_request)
+        return CiFailurePersistenceResult(
+            event_id=42,
+            status=CiFailurePersistenceStatus.CREATED,
+        )
+
+    monkeypatch.setattr(
+        ci_ingest_route,
+        "persist_ci_failure_event",
+        fake_persist_ci_failure_event,
+        raising=False,
+    )
 
     body = serialize_json(build_valid_payload())
     response = client.post(
@@ -91,13 +119,75 @@ def test_valid_ci_failure_request_returns_validated_response(
         headers=create_signed_headers(body, test_hmac_secret),
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.json() == {
-        "status": "validated",
+        "status": "accepted",
         "run_id": 987654,
         "run_attempt": 1,
         "job_key": "test:0",
     }
+    assert len(persisted_requests) == 1
+    assert persisted_requests[0].run.run_id == 987654
+
+
+def test_changed_payload_for_existing_business_identity_returns_409(
+    client: TestClient,
+    test_hmac_secret: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """相同业务身份对应不同内容时应返回稳定的冲突响应。"""
+
+    async def raise_payload_conflict(
+        _: AsyncSession,
+        __: CiFailureIngestRequest,
+    ) -> CiFailurePersistenceResult:
+        raise CiFailurePayloadConflictError(event_id=42)
+
+    monkeypatch.setattr(
+        ci_ingest_route,
+        "persist_ci_failure_event",
+        raise_payload_conflict,
+    )
+
+    body = serialize_json(build_valid_payload())
+    response = client.post(
+        CI_INGEST_PATH,
+        content=body,
+        headers=create_signed_headers(body, test_hmac_secret),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "同一 CI 业务事件已经存在不同内容"}
+
+
+def test_database_unavailable_returns_503_without_internal_details(
+    client: TestClient,
+    test_hmac_secret: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """数据库无法确认事务结果时应返回可重试的统一响应。"""
+
+    async def raise_persistence_unavailable(
+        _: AsyncSession,
+        __: CiFailureIngestRequest,
+    ) -> CiFailurePersistenceResult:
+        raise CiFailurePersistenceUnavailableError("test-only internal database detail")
+
+    monkeypatch.setattr(
+        ci_ingest_route,
+        "persist_ci_failure_event",
+        raise_persistence_unavailable,
+    )
+
+    body = serialize_json(build_valid_payload())
+    response = client.post(
+        CI_INGEST_PATH,
+        content=body,
+        headers=create_signed_headers(body, test_hmac_secret),
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "CI 失败事件存储暂时不可用"}
 
 
 def test_string_run_id_returns_422_with_nested_field_location(

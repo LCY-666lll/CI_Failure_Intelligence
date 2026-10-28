@@ -119,11 +119,11 @@ def sender_environment(sender_config: sender.SenderConfig) -> dict[str, str]:
 
 
 def create_success_body(config: sender.SenderConfig) -> bytes:
-    """创建与当前发送配置身份一致的validated响应。"""
+    """创建与当前发送配置身份一致的 accepted 响应。"""
 
     return json.dumps(
         {
-            "status": "validated",
+            "status": "accepted",
             "run_id": config.github_run_id,
             "run_attempt": config.github_run_attempt,
             "job_key": config.github_job_key,
@@ -222,9 +222,7 @@ def test_create_security_headers_matches_v1_protocol_and_refreshes_nonce() -> No
     first_headers = sender.create_security_headers(TEST_SECRET, raw_body)
     second_headers = sender.create_security_headers(TEST_SECRET, raw_body)
     assert first_headers["X-CFI-Nonce"] != second_headers["X-CFI-Nonce"]
-    assert first_headers["X-CFI-Signature-256"] != second_headers[
-        "X-CFI-Signature-256"
-    ]
+    assert first_headers["X-CFI-Signature-256"] != second_headers["X-CFI-Signature-256"]
 
 
 @pytest.mark.parametrize(
@@ -232,10 +230,10 @@ def test_create_security_headers_matches_v1_protocol_and_refreshes_nonce() -> No
     [
         b"not-json",
         b"[]",
-        b'{"status":"validated"}',
-        b'{"status":"accepted","run_id":987654,"run_attempt":1,"job_key":"backend-tests"}',
-        b'{"status":"validated","run_id":true,"run_attempt":1,"job_key":"backend-tests"}',
-        b'{"status":"validated","run_id":111,"run_attempt":1,"job_key":"backend-tests"}',
+        b'{"status":"accepted"}',
+        b'{"status":"validated","run_id":987654,"run_attempt":1,"job_key":"backend-tests"}',
+        b'{"status":"accepted","run_id":true,"run_attempt":1,"job_key":"backend-tests"}',
+        b'{"status":"accepted","run_id":111,"run_attempt":1,"job_key":"backend-tests"}',
     ],
 )
 def test_validate_success_response_rejects_untrusted_responses(
@@ -251,7 +249,7 @@ def test_send_single_attempt_sends_signed_original_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     response = FakeResponse(
-        status=200,
+        status=202,
         body=create_success_body(sender_config),
     )
     opener = FakeOpener(response=response)
@@ -322,7 +320,7 @@ def test_send_single_attempt_rejects_oversized_success_response(
         "HTTP_OPENER",
         FakeOpener(
             response=FakeResponse(
-                status=200,
+                status=202,
                 body=b"x" * (sender.MAX_RESPONSE_BODY_BYTES + 1),
             )
         ),
@@ -448,7 +446,7 @@ def test_main_returns_zero_and_does_not_log_sensitive_content(
     captured = capsys.readouterr()
 
     assert exit_code == 0
-    assert "服务端验证通过" in captured.out
+    assert "原始 CI 失败事件已保存" in captured.out
     assert captured.err == ""
     assert TEST_SECRET_TEXT not in captured.out
     assert TEST_REPORT not in captured.out
@@ -463,4 +461,3 @@ def test_main_returns_one_for_configuration_error(
     assert exit_code == 1
     assert captured.out == ""
     assert "配置错误" in captured.err
-

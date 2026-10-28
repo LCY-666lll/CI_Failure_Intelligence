@@ -13,6 +13,7 @@ from enum import StrEnum
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ci_failure_intelligence.infrastructure.persistence.models.ci_failure_event import (
@@ -53,7 +54,11 @@ class CiFailurePayloadConflictError(RuntimeError):
         super().__init__("同一 CI 业务身份已经保存了不同内容")
 
 
-async def persist_ci_failure_event(
+class CiFailurePersistenceUnavailableError(RuntimeError):
+    """表示数据库无法可靠完成 CI 失败事件持久化。"""
+
+
+async def _persist_ci_failure_event_in_transaction(
     session: AsyncSession, ingest_request: CiFailureIngestRequest
 ) -> CiFailurePersistenceResult:
     """在一个事务中保存或复用 CI 失败事件。
@@ -132,3 +137,35 @@ async def persist_ci_failure_event(
             event_id=existing_event_id,
             status=CiFailurePersistenceStatus.EXISTING,
         )
+
+
+async def persist_ci_failure_event(
+    session: AsyncSession,
+    ingest_request: CiFailureIngestRequest,
+) -> CiFailurePersistenceResult:
+    """保存或复用 CI 失败事件，并统一翻译数据库异常。
+
+    Args:
+        session: 当前业务操作独享的异步数据库 Session。
+        ingest_request: 已通过 Pydantic 严格校验的 CI 失败请求。
+
+    Returns:
+        CiFailurePersistenceResult: 新建或复用的数据库事件 ID，
+            以及本次持久化状态。
+
+    Raises:
+        CiFailurePayloadConflictError: 相同业务身份已经保存了不同内容。
+        CiFailurePersistenceUnavailableError: SQLAlchemy 无法可靠完成
+            数据库操作或事务提交。
+    """
+
+    try:
+        return await _persist_ci_failure_event_in_transaction(
+            session,
+            ingest_request,
+        )
+    except SQLAlchemyError as error:
+        # 对上层隐藏数据库框架细节，同时通过异常链保留原始原因。
+        raise CiFailurePersistenceUnavailableError(
+            "CI 失败事件存储暂时不可用"
+        ) from error

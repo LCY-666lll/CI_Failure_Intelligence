@@ -59,6 +59,9 @@ MAX_INGEST_BODY_BYTES = 8 * 1024 * 1024
 # 单次请求最多等待10秒，避免GitHub Actions无限阻塞。
 HTTP_REQUEST_TIMEOUT_SECONDS = 10
 
+# 只有数据库事务已经提交或确认相同事件存在时，服务端才返回202。
+ACCEPTED_HTTP_STATUS_CODE = 202
+
 # 成功响应只包含少量状态字段，最多读取64KiB以限制异常响应占用。
 MAX_RESPONSE_BODY_BYTES = 64 * 1024
 
@@ -262,9 +265,10 @@ def _validate_bounded_text(
 
     return raw_value
 
+
 def _validate_ingest_url(
-    raw_value:str,
-    environment_name:str,
+    raw_value: str,
+    environment_name: str,
 ) -> str:
     """检查 CI 失败接入地址是否符合本项目的传输安全规则。
 
@@ -291,13 +295,13 @@ def _validate_ingest_url(
         raise SenderConfigurationError(f"{environment_name} 不是有效的接入 URL") from e
     scheme = parsed_url.scheme.lower()
     hostname = parsed_url.hostname
-    
-    if scheme not in ("http","https"):
+
+    if scheme not in ("http", "https"):
         raise SenderConfigurationError(f"{environment_name}只允许使用HTTP或HTTPS")
-    
+
     if hostname is None:
         raise SenderConfigurationError(f"{environment_name} 缺少主机名")
-    
+
     # 本项目通过 HMAC 请求头鉴权，不允许在 URL 中携带认证信息。
     if parsed_url.username is not None or parsed_url.password is not None:
         raise SenderConfigurationError(f"{environment_name} 不能包含用户名或密码")
@@ -317,6 +321,7 @@ def _validate_ingest_url(
         )
 
     return raw_value
+
 
 def _validate_repository_full_name(
     raw_value: str,
@@ -375,6 +380,7 @@ def _validate_commit_sha(
 
     return raw_value
 
+
 def _encode_hmac_secret(
     raw_value: str,
     environment_name: str,
@@ -432,9 +438,8 @@ def _validate_junit_xml_path(
 
     return junit_xml_path
 
-def load_sender_config(
-    environ:Mapping[str,str]
-) -> SenderConfig:
+
+def load_sender_config(environ: Mapping[str, str]) -> SenderConfig:
     """从环境变量映射创建经过完整校验的发送端配置。
 
     Args:
@@ -577,6 +582,7 @@ def load_sender_config(
         github_head_branch=github_head_branch,
     )
 
+
 def read_junit_xml(junit_xml_path: Path) -> str:
     """按UTF-8读取一次受字符上限保护的JUnit XML。
 
@@ -592,10 +598,10 @@ def read_junit_xml(junit_xml_path: Path) -> str:
     """
 
     try:
-        with junit_xml_path.open(mode="r",encoding="utf-8") as junit_file:
+        with junit_xml_path.open(mode="r", encoding="utf-8") as junit_file:
             # 多读取一个字符，用来区分“恰好达到上限”和“已经超限”
             junit_xml = junit_file.read(MAX_JUNIT_XML_CHARACTERS + 1)
-            
+
     # OSError覆盖： - 文件被删除； - 权限不足； - 文件系统读取失败。
     # UnicodeDecodeError表示文件字节不能按UTF-8解释。
     except (OSError, UnicodeDecodeError) as e:
@@ -607,6 +613,7 @@ def read_junit_xml(junit_xml_path: Path) -> str:
         raise SenderReportError(f"JUnit XML不能超过{MAX_JUNIT_XML_CHARACTERS}个字符")
 
     return junit_xml
+
 
 def build_request_body(
     config: SenderConfig,
@@ -658,6 +665,7 @@ def build_request_body(
         raise SenderPayloadError(f"完整JSON请求体不能超过{MAX_INGEST_BODY_BYTES}字节")
 
     return raw_body
+
 
 def create_security_headers(
     hmac_secret: bytes,
@@ -716,11 +724,12 @@ def create_security_headers(
         INGEST_SIGNATURE_HEADER_NAME: f"v1={digest}",
     }
 
+
 def validate_success_response(
     response_body: bytes,
     config: SenderConfig,
 ) -> None:
-    """核对服务端回执:确认HTTP 200响应符合当前validated成功契约。
+    """核对服务端回执，确认响应符合当前 accepted 成功契约。
 
     Args:
         response_body: 服务端返回的原始响应Body字节。
@@ -741,7 +750,7 @@ def validate_success_response(
         raise SenderResponseError("服务端成功响应不是合法的UTF-8 JSON") from error
 
     # 成功响应的JSON顶层必须是对象，不能是列表、字符串或数字。
-    if not isinstance(response_data, dict): 
+    if not isinstance(response_data, dict):
         raise SenderResponseError("服务端成功响应必须是JSON对象")
 
     # 当前客户端只认可这四个字段，防止接口契约悄悄发生变化。
@@ -756,9 +765,9 @@ def validate_success_response(
     if set(response_data) != expected_fields:
         raise SenderResponseError("服务端成功响应字段不符合当前契约")
 
-    # 当前阶段只有validated表示请求通过安全检查和数据契约校验。
-    if response_data["status"] != "validated":
-        raise SenderResponseError("服务端未确认请求通过验证")
+    # accepted表示原始CI事件已经提交，或相同事件已经可靠存在。
+    if response_data["status"] != "accepted":
+        raise SenderResponseError("服务端未确认原始CI失败事件已保存")
 
     # 使用type(...) is int，避免把JSON中的true误认为整数1。
     if type(response_data["run_id"]) is not int:
@@ -790,12 +799,12 @@ def send_single_attempt(
         raw_body: 已固定并完成大小检查的原始JSON请求字节。
 
     Returns:
-        None: 服务端返回HTTP 200，且成功响应契约校验通过。
+        None: 服务端返回HTTP 202，且成功响应契约校验通过。
 
     Raises:
         SenderNetworkError: DNS、连接、TLS或超时导致未取得响应。
-        SenderHttpStatusError: 服务端返回的HTTP状态不是200。
-        SenderResponseError: HTTP 200响应过大或不符合成功响应契约。
+        SenderHttpStatusError: 服务端返回的HTTP状态不是202。
+        SenderResponseError: HTTP 202响应过大或不符合成功响应契约。
     """
 
     # 每次调用都重新生成timestamp、nonce和signature。
@@ -840,18 +849,16 @@ def send_single_attempt(
         raise SenderHttpStatusError(status_code) from error
 
     except (URLError, TimeoutError) as error:
-        raise SenderNetworkError(
-            "CI接入请求因网络或超时问题失败"
-        ) from error
+        raise SenderNetworkError("CI接入请求因网络或超时问题失败") from error
 
-    # urllib通常把非2xx转换成HTTPError，其他2xx仍需按当前契约拒绝。
-    if status_code != 200:
+    # urllib通常把非2xx转换成HTTPError；其他2xx也不能冒充当前成功契约。
+    if status_code != ACCEPTED_HTTP_STATUS_CODE:
         raise SenderHttpStatusError(status_code)
 
     if len(response_body) > MAX_RESPONSE_BODY_BYTES:
         raise SenderResponseError("服务端成功响应超过允许的大小")
 
-    # HTTP 200只是传输层成功，最后还要核对JSON状态和CI运行身份。
+    # HTTP 202只是第一层条件，还必须核对accepted状态和CI运行身份。
     validate_success_response(
         response_body,
         config,
@@ -877,7 +884,7 @@ def send_with_retries(
     Raises:
         SenderNetworkError: 三次尝试均发生网络错误。
         SenderHttpStatusError: 收到不可重试状态，或可重试状态耗尽三次。
-        SenderResponseError: HTTP 200响应不符合成功契约，不进行重试。
+        SenderResponseError: HTTP 202响应不符合成功契约，不进行重试。
     """
 
     # 两个等待间隔对应三次发送：第一次立即执行，后面最多再执行两次。
@@ -920,7 +927,8 @@ def main(
         environ: 可选环境变量映射；未提供时读取当前进程环境变量。
 
     Returns:
-        int: 服务端验证通过时返回0；已知配置、报告、构造或投递失败时返回1。
+        int: 原始CI失败事件确认保存时返回0；
+            已知配置、报告、构造或投递失败时返回1。
     """
 
     # 正常命令行运行读取真实环境；测试可以传入独立字典避免污染进程环境。
@@ -937,7 +945,7 @@ def main(
         raw_body = build_request_body(
             config,
             junit_xml,
-        ) 
+        )
 
         # 最多执行三次投递；单次尝试内部负责创建新的安全信封。
         send_with_retries(
@@ -965,9 +973,9 @@ def main(
         print(f"CI失败投递失败：{error}", file=sys.stderr)
         return 1
 
-    # 当前200响应只表示通过安全检查和数据契约校验，不代表事件已经保存。
+    # 这里只确认原始事件已经持久化，不代表JUnit已经解析或诊断完成。
     print(
-        "服务端验证通过："
+        "原始 CI 失败事件已保存："
         f"run_id={config.github_run_id} "
         f"run_attempt={config.github_run_attempt} "
         f"job_key={config.github_job_key}"

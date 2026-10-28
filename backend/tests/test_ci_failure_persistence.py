@@ -12,8 +12,10 @@ from ci_failure_intelligence.service.ci_failure_payload import (
 from ci_failure_intelligence.service.ci_failure_persistence import (
     CiFailurePayloadConflictError,
     CiFailurePersistenceStatus,
+    CiFailurePersistenceUnavailableError,
     persist_ci_failure_event,
 )
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -95,6 +97,19 @@ class FakeSession:
         return self.results.pop(0)
 
 
+class UnavailableSession:
+    """模拟执行首条数据库语句时基础设施不可用。"""
+
+    def __init__(self) -> None:
+        self.transaction = FakeTransaction()
+
+    def begin(self) -> FakeTransaction:
+        return self.transaction
+
+    async def execute(self, statement: object) -> FakeResult:
+        raise SQLAlchemyError("test-only database failure")
+
+
 def test_first_business_event_is_created() -> None:
     """首次业务身份应插入新行并返回数据库事件 ID。"""
 
@@ -159,3 +174,20 @@ def test_same_business_identity_with_changed_payload_is_conflict() -> None:
 
     assert len(fake_session.statements) == 2
     assert fake_session.transaction.exit_error_type is CiFailurePayloadConflictError
+
+
+def test_database_error_is_translated_to_persistence_unavailable() -> None:
+    """数据库异常应成为稳定的服务层异常，并保留原始原因。"""
+
+    unavailable_session = UnavailableSession()
+
+    with pytest.raises(CiFailurePersistenceUnavailableError) as captured_error:
+        asyncio.run(
+            persist_ci_failure_event(
+                cast(AsyncSession, unavailable_session),
+                build_ingest_request(),
+            )
+        )
+
+    assert isinstance(captured_error.value.__cause__, SQLAlchemyError)
+    assert unavailable_session.transaction.exit_error_type is SQLAlchemyError

@@ -9,8 +9,15 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from ci_failure_intelligence.api.exception_handlers import (
+    register_exception_handlers,
+)
 from ci_failure_intelligence.api.router import api_router
 from ci_failure_intelligence.core.config import Settings
+from ci_failure_intelligence.infrastructure.database import (
+    create_database_engine,
+    create_database_session_factory,
+)
 from ci_failure_intelligence.infrastructure.redis_client import (
     create_redis_client,
 )
@@ -21,10 +28,6 @@ from ci_failure_intelligence.middleware.ci_ingest_security import (
     CiIngestSecurityMiddleware,
 )
 from ci_failure_intelligence.security.nonce_store import NonceStore
-from ci_failure_intelligence.infrastructure.database import (
-    create_database_engine,
-    create_database_session_factory,
-)
 
 
 def create_app(
@@ -116,6 +119,9 @@ def create_app(
         title="CI Failure Intelligence API", version="0.1.0", lifespan=lifespan
     )
 
+    # 在应用开始处理请求前，建立项目异常到 HTTP 响应的统一映射。
+    register_exception_handlers(app)
+
     # 当前环境的真实密钥字节
     # SecretStr 只负责避免密钥在日志和调试输出中被直接显示。
     ingest_hmac_secret = settings.ingest_hmac_secret.get_secret_value().encode("utf-8")
@@ -140,7 +146,6 @@ def create_app(
 
     # 后续数据库依赖会为每次业务操作调用该工厂创建独立Session。
     app.state.database_session_factory = database_session_factory
-
 
     # 把已经汇总的健康检查和CI接入路由注册到当前应用实例。
     app.include_router(api_router)
