@@ -5,6 +5,7 @@ description = "Evidence-driven CI failure clustering, retrieval, and diagnosis p
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.20,<1.21",
+    "defusedxml>=0.7.1,<0.8.0",
     "fastapi>=0.142.3,<0.143.0",
     "psycopg[binary]>=3.2,<3.4",
     "pydantic>=2.14.1,<2.15.0",

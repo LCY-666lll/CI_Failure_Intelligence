@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites name="pytest tests">
+  <testsuite name="pytest" errors="0" failures="0" skipped="1" tests="2">
+    <testcase classname="tests.test_health" name="test_health_is_ok" />
+    <testcase classname="tests.test_health" name="test_health_is_skipped">
+      <skipped type="pytest.skip" message="not supported">not supported</skipped>
+    </testcase>
+  </testsuite>
+</testsuites>

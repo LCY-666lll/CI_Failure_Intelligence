@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites name="pytest tests">
+  <testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1">
+    <testcase classname="tests.test_ci_ingest_api" name="test_create_event">
+      <failure message="assert 500 == 202">Traceback...
+assert 500 == 202</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
