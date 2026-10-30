@@ -102,7 +102,8 @@ def _local_name(tag: str) -> str:
 
 
 def _utf8_size(*values: str | None) -> int:
-    """计算一条明细最终复制到数据库的 UTF-8 字节量。
+    """计算一条明细最终复制到数据库的 UTF-8 字节量，防止错误堆栈等文本太大。
+    *values : 可以接受多个参数
 
     Args:
         values: 明细中的 suite、测试身份、消息和错误文本。
@@ -199,6 +200,7 @@ def _extract_testcase_issues(
         if current_text_bytes > limits.max_detail_text_bytes:
             _raise_resource_limit("明细文本 UTF-8 字节量")
 
+        # 创建失败记录
         testcase_details.append(
             ParsedJunitIssue(
                 testcase_index=context.testcase_index,

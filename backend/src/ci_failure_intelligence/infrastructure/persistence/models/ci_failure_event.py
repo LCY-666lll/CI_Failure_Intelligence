@@ -13,6 +13,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 
 # Mapped 描述 ORM 属性的 Python 类型；
@@ -58,6 +59,41 @@ class CiFailureEventModel(Base):
         CheckConstraint(
             "payload_sha256 ~ '^[0-9a-f]{64}$'",
             name="payload_sha256_format",
+        ),
+        # 错误摘要只用于排查解析失败，不允许无限保存第三方异常文本。
+        CheckConstraint(
+            """
+            parse_error_message IS NULL
+            OR char_length(parse_error_message) <= 2000
+            """,
+            name="parse_error_message_length",
+        ),
+        # 三种解析状态必须与错误字段和完成时间保持一致，
+        # 防止出现 parsed 但仍残留错误信息等矛盾数据。
+        CheckConstraint(
+            """
+            (
+                parse_status = 'pending'
+                AND parse_error_code IS NULL
+                AND parse_error_message IS NULL
+                AND parse_finished_at IS NULL
+            )
+            OR
+            (
+                parse_status = 'parsed'
+                AND parse_error_code IS NULL
+                AND parse_error_message IS NULL
+                AND parse_finished_at IS NOT NULL
+            )
+            OR
+            (
+                parse_status = 'failed'
+                AND parse_error_code IS NOT NULL
+                AND parse_error_message IS NOT NULL
+                AND parse_finished_at IS NOT NULL
+            )
+            """,
+            name="parse_state_consistency",
         ),
         # 这四个字段共同构成一个 CI 业务事件的稳定身份。
         UniqueConstraint(
@@ -123,4 +159,29 @@ class CiFailureEventModel(Base):
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
+    )
+
+    # 新事件只完成了原始 XML 保存，尚未完成后台解析。
+    # server_default 让现有 HTTP 插入代码无需主动提供这个字段。
+    parse_status: Mapped[str] = mapped_column(
+        String(20),
+        server_default=text("'pending'"),
+    )
+
+    # 解析失败时保存稳定机器代码，例如 invalid_xml。
+    parse_error_code: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+
+    # 只保存限长的排查摘要，不重复保存完整 XML 或错误堆栈。
+    parse_error_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    # pending 时为空；parsed 或 failed 时记录最近一次解析结束时间。
+    parse_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )

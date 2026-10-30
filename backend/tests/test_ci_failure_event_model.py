@@ -34,10 +34,18 @@ def test_ci_failure_event_table_has_required_columns() -> None:
         "junit_xml",
         "payload_sha256",
         "received_at",
+        "parse_status",
+        "parse_error_code",
+        "parse_error_message",
+        "parse_finished_at",
     }
     assert table.c.id.primary_key is True
     assert table.c.received_at.server_default is not None
-    assert all(not column.nullable for column in table.columns)
+    assert table.c.parse_status.server_default is not None
+    assert table.c.parse_status.nullable is False
+    assert table.c.parse_error_code.nullable is True
+    assert table.c.parse_error_message.nullable is True
+    assert table.c.parse_finished_at.nullable is True
 
 
 def test_ci_failure_event_table_has_business_identity_constraint() -> None:
@@ -75,4 +83,6 @@ def test_ci_failure_event_table_has_named_check_constraints() -> None:
         "ck_ci_failure_events_junit_xml_length",
         "ck_ci_failure_events_commit_sha_format",
         "ck_ci_failure_events_payload_sha256_format",
+        "ck_ci_failure_events_parse_error_message_length",
+        "ck_ci_failure_events_parse_state_consistency",
     }
