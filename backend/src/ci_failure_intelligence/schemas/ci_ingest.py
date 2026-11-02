@@ -14,7 +14,12 @@ MAX_JUNIT_XML_CHARACTERS = 2_000_000
 class RepositoryIdentity(BaseModel):
     """描述产生本次 CI 运行的 GitHub 仓库。"""
 
-    model_config = ConfigDict(strict=True, extra="forbid")
+    model_config = ConfigDict(
+        # 严格类型校验，例如整数不能随意用字符串代替
+        strict=True,
+        # 拒绝请求中没有定义的额外字段
+        extra="forbid",
+    )
 
     github_repository_id: int = Field(
         gt=0,
