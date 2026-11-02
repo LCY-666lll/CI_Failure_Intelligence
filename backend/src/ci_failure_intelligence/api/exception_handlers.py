@@ -13,12 +13,16 @@ from ci_failure_intelligence.service.ci_failure_query import (
     CiFailureQueryNotFoundError,
     CiFailureQueryUnavailableError,
 )
+from ci_failure_intelligence.service.ci_run_list import (
+    CiRunListUnavailableError,
+)
 
 CI_FAILURE_PAYLOAD_CONFLICT_DETAIL = "同一 CI 业务事件已经存在不同内容"
 CI_FAILURE_PERSISTENCE_UNAVAILABLE_DETAIL = "CI 失败事件存储暂时不可用"
 
 CI_FAILURE_QUERY_NOT_FOUND_DETAIL = "CI 失败事件不存在"
 CI_FAILURE_QUERY_UNAVAILABLE_DETAIL = "CI 失败详情查询暂时不可用"
+CI_RUN_LIST_UNAVAILABLE_DETAIL = "CI 事件列表查询暂时不可用"
 
 # 获取当前模块的日志记录器
 logger = logging.getLogger(__name__)
@@ -115,6 +119,31 @@ async def handle_ci_failure_query_unavailable(
     )
 
 
+async def handle_ci_run_list_unavailable(
+    request: Request,
+    error: Exception,
+) -> JSONResponse:
+    """把最近事件列表查询故障转换为固定 HTTP 503。
+
+    Args:
+        request: 触发异常的 HTTP 请求，本处理器不读取请求内容。
+        error: 列表服务抛出的不可用异常，用于记录内部错误链。
+
+    Returns:
+        JSONResponse: 不泄露数据库信息的固定 503 响应。
+    """
+
+    logger.error(
+        "CI 事件列表查询暂时不可用",
+        exc_info=(type(error), error, error.__traceback__),
+    )
+
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": CI_RUN_LIST_UNAVAILABLE_DETAIL},
+    )
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """为 FastAPI 应用注册 CI 失败事件异常处理规则。
         “异常类型 → 处理函数”
@@ -138,4 +167,8 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(
         CiFailureQueryUnavailableError,
         handle_ci_failure_query_unavailable,
+    )
+    app.add_exception_handler(
+        CiRunListUnavailableError,
+        handle_ci_run_list_unavailable,
     )
