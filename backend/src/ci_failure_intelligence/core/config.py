@@ -16,7 +16,6 @@ from pydantic import Field, SecretStr, field_validator
 # SettingsConfigDict 负责声明读取环境变量时采用的规则。
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 DEFAULT_INGEST_MAX_BODY_BYTES = 8 * 1024 * 1024
 
 DEFAULT_INGEST_TIMESTAMP_TOLERANCE_SECONDS = 300
@@ -143,6 +142,9 @@ class Settings(PostgresSettings):
     # 打印时遮住内容的字符串，SecretStr：让打印配置对象时只显示星号
     ingest_hmac_secret: SecretStr
 
+    # 失败详情读取接口使用独立令牌，不能与负责CI报告写入认证的HMAC密钥复用。
+    failure_read_token: SecretStr
+
     # 这个属性是整数，没有提供时使用默认值，提供的值必须大于 0
     ingest_max_body_bytes: int = Field(
         default=DEFAULT_INGEST_MAX_BODY_BYTES,
@@ -240,6 +242,30 @@ class Settings(PostgresSettings):
 
         if len(secret_bytes) < 32:
             raise ValueError("CI 接入 HMAC 密钥的 UTF-8 编码长度必须至少为 32 字节")
+
+        return value
+
+    @field_validator("failure_read_token")
+    @classmethod
+    def validate_failure_read_token(
+        cls,
+        value: SecretStr,
+    ) -> SecretStr:
+        """确保失败详情读取令牌具有足够的UTF-8字节长度。
+
+        Args:
+            value: 从运行环境读取并转换为SecretStr的读取令牌。
+
+        Returns:
+            SecretStr: 通过最小字节长度校验的原始令牌对象。
+
+        Raises:
+            ValueError: 令牌经过UTF-8编码后不足32字节。
+        """
+        token_bytes = value.get_secret_value().encode("utf-8")
+
+        if len(token_bytes) < 32:
+            raise ValueError("失败详情读取令牌的UTF-8编码长度必须至少为32字节")
 
         return value
 

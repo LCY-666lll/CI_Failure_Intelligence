@@ -3,16 +3,15 @@
 from collections.abc import Iterator
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-from pydantic import SecretStr
-
 from ci_failure_intelligence.application import create_app
 from ci_failure_intelligence.core.config import Settings
 from ci_failure_intelligence.security.nonce_store import (
     NonceClaimResult,
     NonceStore,
 )
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 
 class AlwaysClaimNonceStore:
@@ -35,6 +34,7 @@ def test_settings(test_hmac_secret: bytes) -> Settings:
 
     return Settings(
         ingest_hmac_secret=SecretStr(test_hmac_secret.decode("utf-8")),
+        failure_read_token=SecretStr("test-only-failure-read-token-with-32-bytes"),
         ingest_max_body_bytes=1024 * 1024,
         redis_password=SecretStr("test-only-redis-password-with-32-bytes"),
         postgres_password=SecretStr("test-only-postgres-password-with-32-bytes"),

@@ -1,13 +1,12 @@
 """验证后端运行配置的安全边界。"""
 
 import pytest
+from ci_failure_intelligence.core.config import PostgresSettings, Settings
 from pydantic import SecretStr, ValidationError
 from pydantic_settings import SettingsConfigDict
 
-from ci_failure_intelligence.core.config import PostgresSettings, Settings
-
-
 TEST_SECRET = SecretStr("test-only-secret-with-at-least-32-bytes")
+TEST_FAILURE_READ_TOKEN = SecretStr("test-only-failure-read-token-with-32-bytes")
 TEST_REDIS_PASSWORD = SecretStr("test-only-redis-password-with-32-bytes")
 TEST_POSTGRES_PASSWORD = SecretStr("test-only-postgres-password-with-32-bytes")
 
@@ -29,6 +28,7 @@ def create_test_settings(**overrides: object) -> Settings:
 
     settings_data: dict[str, object] = {
         "ingest_hmac_secret": TEST_SECRET,
+        "failure_read_token": TEST_FAILURE_READ_TOKEN,
         "redis_password": TEST_REDIS_PASSWORD,
         "postgres_password": TEST_POSTGRES_PASSWORD,
     }
@@ -55,6 +55,7 @@ def test_full_settings_still_requires_ingest_and_redis_secrets(
 
     # 禁用进程环境变量和 .env，确保测试只观察类本身的必填字段。
     monkeypatch.delenv("CFI_INGEST_HMAC_SECRET", raising=False)
+    monkeypatch.delenv("CFI_FAILURE_READ_TOKEN", raising=False)
     monkeypatch.delenv("CFI_REDIS_PASSWORD", raising=False)
 
     with pytest.raises(ValidationError) as captured_error:
@@ -62,7 +63,25 @@ def test_full_settings_still_requires_ingest_and_redis_secrets(
 
     missing_fields = {error["loc"] for error in captured_error.value.errors()}
     assert ("ingest_hmac_secret",) in missing_fields
+    assert ("failure_read_token",) in missing_fields
     assert ("redis_password",) in missing_fields
+
+
+def test_failure_read_token_is_masked() -> None:
+    """读取令牌不能通过配置对象的普通字符串表示泄露。"""
+
+    settings = create_test_settings()
+
+    assert str(settings.failure_read_token) == "**********"
+
+
+def test_failure_read_token_rejects_short_value() -> None:
+    """拒绝不足32个UTF-8字节的失败详情读取令牌。"""
+
+    with pytest.raises(ValidationError):
+        create_test_settings(
+            failure_read_token=SecretStr("too-short"),
+        )
 
 
 def test_timestamp_tolerance_defaults_to_300_seconds() -> None:

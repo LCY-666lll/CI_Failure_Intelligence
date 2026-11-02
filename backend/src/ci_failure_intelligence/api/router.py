@@ -2,8 +2,11 @@
 
 from fastapi import APIRouter
 
-from ci_failure_intelligence.api.routes import ci_ingest,health
-
+from ci_failure_intelligence.api.routes import (
+    ci_failure_query,
+    ci_ingest,
+    health,
+)
 
 # 这个路由器不拥有统一前缀，只负责组合各模块路由。
 api_router = APIRouter()
@@ -13,3 +16,6 @@ api_router.include_router(health.router)
 
 # 将 CI 失败接入模块已经登记的路由复制到顶层路由器。
 api_router.include_router(ci_ingest.router)
+
+# 将受读取令牌保护的 CI 失败详情查询路由复制到顶层路由器。
+api_router.include_router(ci_failure_query.router)
