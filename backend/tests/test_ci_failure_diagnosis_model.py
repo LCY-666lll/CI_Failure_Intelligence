@@ -110,3 +110,20 @@ def test_diagnosis_table_has_named_check_constraints() -> None:
         "ck_ci_failure_diagnoses_error_message_length",
         "ck_ci_failure_diagnoses_state_consistency",
     }
+
+
+def test_completed_diagnosis_allows_missing_provider_model_name() -> None:
+    """供应商未返回实际模型名时，合法诊断结果仍应允许保存。"""
+
+    state_constraint = next(
+        constraint
+        for constraint in get_diagnosis_table().constraints
+        if isinstance(constraint, CheckConstraint)
+        and constraint.name == "ck_ci_failure_diagnoses_state_consistency"
+    )
+    constraint_sql = str(state_constraint.sqltext)
+    completed_branch = constraint_sql.split("status = 'completed'", maxsplit=1)[1]
+    completed_branch = completed_branch.split("status = 'failed'", maxsplit=1)[0]
+
+    assert "diagnosis_json IS NOT NULL" in completed_branch
+    assert "model_name IS NOT NULL" not in completed_branch

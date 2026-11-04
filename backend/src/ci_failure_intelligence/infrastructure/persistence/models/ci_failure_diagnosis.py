@@ -31,7 +31,7 @@ class CiFailureDiagnosisModel(Base):
         CheckConstraint(
             "status IN ('processing', 'completed', 'failed')",
             name="status_supported",
-        ), 
+        ),
         CheckConstraint(
             "char_length(prompt_version) >= 1",
             name="prompt_version_non_empty",
@@ -105,7 +105,6 @@ class CiFailureDiagnosisModel(Base):
                 AND lease_token IS NULL
                 AND lease_expires_at IS NULL
                 AND diagnosis_json IS NOT NULL
-                AND model_name IS NOT NULL
                 AND error_code IS NULL
                 AND error_message IS NULL
                 AND finished_at IS NOT NULL
