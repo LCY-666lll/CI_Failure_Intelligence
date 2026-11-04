@@ -9,6 +9,8 @@
 通过后才能创建FastAPI应用
 """
 
+from typing import Literal
+
 # field_validator 用来登记一个字段校验函数。
 from pydantic import Field, SecretStr, field_validator
 
@@ -32,6 +34,15 @@ DEFAULT_REDIS_CONNECT_TIMEOUT_SECONDS = 1.0
 DEFAULT_REDIS_SOCKET_TIMEOUT_SECONDS = 1.0
 DEFAULT_REDIS_MAX_CONNECTIONS = 10
 
+DEFAULT_DEEPSEEK_API_BASE = "https://api.deepseek.com"
+DEFAULT_DEEPSEEK_MODEL = "deepseek-flash"
+# 模型服务不可用时应有限等待，不能无限阻塞诊断任务。
+DEFAULT_DEEPSEEK_TIMEOUT_SECONDS = 30.0
+# 首次调用失败后最多额外重试一次。
+DEFAULT_DEEPSEEK_MAX_RETRIES = 1
+# 结构化诊断内容应保持精简，同时限制单次调用输出规模。
+DEFAULT_DEEPSEEK_MAX_OUTPUT_TOKENS = 4096
+
 # PostgreSQL 默认通过 Docker 映射端口供本机 FastAPI 访问。
 DEFAULT_POSTGRES_HOST = "127.0.0.1"
 DEFAULT_POSTGRES_PORT = 5432
@@ -46,10 +57,9 @@ DEFAULT_POSTGRES_MAX_OVERFLOW = 5
 DEFAULT_POSTGRES_CONNECT_TIMEOUT_SECONDS = 3
 
 
-class PostgresSettings(BaseSettings):
-    """描述数据库工具和后端共同使用的 PostgreSQL 配置。"""
+class DeepSeekSettings(BaseSettings):
+    """描述 AI 诊断功能使用的 DeepSeek 运行配置。"""
 
-    # PostgreSQL 专用配置和完整后端配置共用同一套环境变量读取规则。
     # 告诉 BaseSettings：按什么规则寻找和读取配置
     model_config = SettingsConfigDict(
         # 本地开发时读取当前工作目录中的 .env
@@ -59,6 +69,70 @@ class PostgresSettings(BaseSettings):
         # 所有字段对应的环境变量都增加 CFI_ 前缀
         env_prefix="CFI_",
         # .env 还有当前类没声明的配置，就忽略，不会导致报错
+        extra="ignore",
+    )
+    # API Key 没有默认值；只有真正使用 AI 功能时才必须提供。
+    deepseek_api_key: SecretStr
+
+    # 第一版只允许官方地址，避免把官方 Key 发送到未知代理。
+    deepseek_api_base: Literal["https://api.deepseek.com"] = DEFAULT_DEEPSEEK_API_BASE
+
+    # 第一版固定使用 Flash，不允许通过环境变量误切换到退役或高成本模型。
+    deepseek_model: Literal["deepseek-flash"] = DEFAULT_DEEPSEEK_MODEL
+
+    deepseek_timeout_seconds: float = Field(
+        default=DEFAULT_DEEPSEEK_TIMEOUT_SECONDS,
+        gt=0,
+        le=120,
+    )
+
+    deepseek_max_retries: int = Field(
+        default=DEFAULT_DEEPSEEK_MAX_RETRIES,
+        ge=0,
+        le=2,
+    )
+
+    deepseek_max_output_tokens: int = Field(
+        default=DEFAULT_DEEPSEEK_MAX_OUTPUT_TOKENS,
+        ge=256,
+        le=4096,
+    )
+
+    @field_validator("deepseek_api_key")
+    @classmethod
+    def validate_deepseek_api_key(
+        cls,
+        value: SecretStr,
+    ) -> SecretStr:
+        """拒绝空白或首尾含空白字符的 DeepSeek API Key。
+
+        Args:
+            value: 从运行环境读取并转换为 SecretStr 的官方 API Key。
+
+        Returns:
+            SecretStr: 通过非空和首尾空白校验的原始 API Key。
+
+        Raises:
+            ValueError: API Key 为空，或首尾包含空白字符。
+        """
+
+        api_key = value.get_secret_value()
+        if not api_key:
+            raise ValueError("DeepSeek API Key 不能为空")
+        if api_key != api_key.strip():
+            raise ValueError("DeepSeek API Key 首尾不能包含空白字符")
+
+        return value
+
+
+class PostgresSettings(BaseSettings):
+    """描述数据库工具和后端共同使用的 PostgreSQL 配置。"""
+
+    # PostgreSQL 专用配置和完整后端配置共用同一套环境变量读取规则。
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_prefix="CFI_",
         extra="ignore",
     )
 
@@ -125,7 +199,6 @@ class PostgresSettings(BaseSettings):
         """
 
         password_bytes = value.get_secret_value().encode("utf-8")
-
         if len(password_bytes) < 32:
             raise ValueError("PostgreSQL 应用密码的 UTF-8 编码长度必须至少为 32 字节")
 
@@ -239,7 +312,6 @@ class Settings(PostgresSettings):
 
         # 取真实内容，再转成字节
         secret_bytes = value.get_secret_value().encode("utf-8")
-
         if len(secret_bytes) < 32:
             raise ValueError("CI 接入 HMAC 密钥的 UTF-8 编码长度必须至少为 32 字节")
 

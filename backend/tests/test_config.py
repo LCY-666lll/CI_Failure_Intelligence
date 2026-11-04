@@ -1,7 +1,11 @@
 """验证后端运行配置的安全边界。"""
 
 import pytest
-from ci_failure_intelligence.core.config import PostgresSettings, Settings
+from ci_failure_intelligence.core.config import (
+    DeepSeekSettings,
+    PostgresSettings,
+    Settings,
+)
 from pydantic import SecretStr, ValidationError
 from pydantic_settings import SettingsConfigDict
 
@@ -9,6 +13,13 @@ TEST_SECRET = SecretStr("test-only-secret-with-at-least-32-bytes")
 TEST_FAILURE_READ_TOKEN = SecretStr("test-only-failure-read-token-with-32-bytes")
 TEST_REDIS_PASSWORD = SecretStr("test-only-redis-password-with-32-bytes")
 TEST_POSTGRES_PASSWORD = SecretStr("test-only-postgres-password-with-32-bytes")
+TEST_DEEPSEEK_API_KEY = SecretStr("test-only-deepseek-api-key")
+
+
+class IsolatedDeepSeekSettings(DeepSeekSettings):
+    """关闭 `.env`，只验证测试显式提供的 DeepSeek 配置。"""
+
+    model_config = SettingsConfigDict(env_file=None)
 
 
 class IsolatedPostgresSettings(PostgresSettings):
@@ -35,6 +46,87 @@ def create_test_settings(**overrides: object) -> Settings:
     settings_data.update(overrides)
 
     return Settings.model_validate(settings_data)
+
+
+def create_deepseek_settings(**overrides: object) -> DeepSeekSettings:
+    """使用完全独立于本地 `.env` 的数据创建 DeepSeek 测试配置。"""
+
+    settings_data: dict[str, object] = {
+        "deepseek_api_key": TEST_DEEPSEEK_API_KEY,
+    }
+    settings_data.update(overrides)
+
+    return IsolatedDeepSeekSettings.model_validate(settings_data)
+
+
+def test_deepseek_settings_does_not_require_unrelated_backend_secrets() -> None:
+    """AI 专用配置不应依赖 HMAC、Redis 或 PostgreSQL 密钥。"""
+
+    settings = create_deepseek_settings()
+
+    assert settings.deepseek_model == "deepseek-flash"
+
+
+def test_full_settings_does_not_require_deepseek_api_key() -> None:
+    """尚未使用 AI 时，现有 FastAPI 配置不应被 DeepSeek Key 阻断。"""
+
+    settings = create_test_settings()
+
+    assert settings.redis_username == "cfi_ingest"
+
+
+def test_deepseek_connection_uses_bounded_defaults() -> None:
+    """DeepSeek 默认配置应固定官方端点、模型和资源边界。"""
+
+    settings = create_deepseek_settings()
+
+    assert settings.deepseek_api_base == "https://api.deepseek.com"
+    assert settings.deepseek_model == "deepseek-flash"
+    assert settings.deepseek_timeout_seconds == 30.0
+    assert settings.deepseek_max_retries == 1
+    assert settings.deepseek_max_output_tokens == 4096
+    assert str(settings.deepseek_api_key) == "**********"
+
+
+@pytest.mark.parametrize(
+    "invalid_api_key",
+    [
+        SecretStr(""),
+        SecretStr(" leading-space"),
+        SecretStr("trailing-space "),
+        SecretStr("surrounded-by-newline\n"),
+    ],
+)
+def test_deepseek_api_key_rejects_empty_or_surrounding_whitespace(
+    invalid_api_key: SecretStr,
+) -> None:
+    """拒绝无法认证或容易因复制产生歧义的 API Key。"""
+
+    with pytest.raises(ValidationError):
+        create_deepseek_settings(deepseek_api_key=invalid_api_key)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("deepseek_api_base", "https://example.com"),
+        ("deepseek_model", "deepseek-chat"),
+        ("deepseek_timeout_seconds", 0),
+        ("deepseek_timeout_seconds", 121),
+        ("deepseek_max_retries", -1),
+        ("deepseek_max_retries", 3),
+        ("deepseek_max_output_tokens", 255),
+        ("deepseek_max_output_tokens", 4097),
+    ],
+)
+def test_deepseek_settings_rejects_unsupported_or_unbounded_values(
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    """拒绝未知端点、退役模型和越过项目资源边界的数值。"""
+
+    with pytest.raises(ValidationError):
+        create_deepseek_settings(**{field_name: invalid_value})
 
 
 def test_postgres_settings_does_not_require_unrelated_security_secrets() -> None:
