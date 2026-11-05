@@ -38,6 +38,27 @@ SYSTEM_INSTRUCTIONS = """\
 """
 
 
+def serialize_ai_evidence_pack(
+    evidence_pack: AiEvidencePack,
+) -> str:
+    """按稳定规则序列化实际发送给模型的 Evidence Pack。
+
+    Args:
+        evidence_pack: 已完成状态、脱敏、数量和字节限制的证据包。
+
+    Returns:
+        str: 键排序、紧凑且保留 Unicode 的稳定 JSON 文本。
+            该文本同时用于 Prompt 和 evidence SHA-256 计算。
+    """
+
+    return json.dumps(
+        evidence_pack.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AiDiagnosisGenerationResult:
     """描述一次通过全部校验的 AI 诊断及有限调用元数据。"""
@@ -100,9 +121,9 @@ def build_ai_diagnosis_messages(evidence_pack: AiEvidencePack) -> list[BaseMessa
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    # 把证据包转换成 JSON
-    # model_dump_json():获取实际数据的 JSON
-    evidence_pack_json = evidence_pack.model_dump_json()
+
+    # Prompt 和缓存摘要必须使用同一套稳定序列化规则。
+    evidence_pack_json = serialize_ai_evidence_pack(evidence_pack)
 
     # 把规则和证据组合成用户消息，告诉 AI 本次要分析什么
     human_content = (

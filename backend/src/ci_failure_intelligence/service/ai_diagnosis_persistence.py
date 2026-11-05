@@ -60,6 +60,7 @@ class AiDiagnosisClaimResult:
     status: AiDiagnosisClaimStatus
     attempt_count: int
 
+    # 只有抢到任务的人才会收到
     lease_token: UUID | None = None
     lease_expires_at: datetime | None = None
 
@@ -201,7 +202,7 @@ def _build_claim_statement(
     # 有相同 event_id：检查是否允许更新。
     # 不允许更新：不修改旧记录
     return insert_statement.on_conflict_do_update(
-        # 以 event_id 作为冲突判断依据
+        # 以 event_id 作为冲突判断依据，判断“是不是同一个事件的任务”
         index_elements=[CiFailureDiagnosisModel.event_id],
         set_={
             "status": "processing",
@@ -225,6 +226,9 @@ def _build_claim_statement(
             "finished_at": None,
             "updated_at": func.now(),
         },
+        # 如果 event_id=xx 已经有一行，发生主键冲突，就检查 reclaimable，
+        # 允许接管才更新成新一轮 processing。
+        # 不允许就不动旧行。只有成功插入或成功更新，才把指定字段返回
         where=reclaimable,
         # 指定数据库操作成功后返回哪些字段
     ).returning(
@@ -256,7 +260,9 @@ async def _claim_ai_diagnosis_in_transaction(
         SQLAlchemyError: SQL 执行或事务提交失败。
     """
 
+    # 先生成这次请求自己的执行凭证
     lease_token = uuid4()
+
     claim_statement = _build_claim_statement(
         event_id=event_id,
         cache_identity=cache_identity,
@@ -267,6 +273,7 @@ async def _claim_ai_diagnosis_in_transaction(
         claim_result = await session.execute(claim_statement)
         claimed_row = claim_result.one_or_none()
 
+        # 刚才确实插入或更新成功:只有这个分支有资格继续调用 DeepSeek。
         if claimed_row is not None:
             return AiDiagnosisClaimResult(
                 event_id=claimed_row.event_id,
@@ -282,6 +289,7 @@ async def _claim_ai_diagnosis_in_transaction(
                 CiFailureDiagnosisModel.event_id == event_id
             )
         )
+        # 取出一个 ORM 模型对象或 None，要的是 CiFailureDiagnosisModel 对象。
         current_diagnosis = current_result.scalar_one_or_none()
 
         if current_diagnosis is None:
@@ -291,10 +299,12 @@ async def _claim_ai_diagnosis_in_transaction(
 
         if (
             current_diagnosis.status == "completed"
+            # 旧任务的证据、提示词版本、模型配置等与本次相同
             and _cache_identity_matches(
                 current_diagnosis,
                 cache_identity,
             )
+            # 旧诊断内容实际存在
             and current_diagnosis.diagnosis_json is not None
         ):
             return AiDiagnosisClaimResult(

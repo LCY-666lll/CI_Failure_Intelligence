@@ -11,6 +11,7 @@ from ci_failure_intelligence.schemas.ai_evidence import (
 from ci_failure_intelligence.service.ai_diagnosis import (
     SYSTEM_INSTRUCTIONS,
     build_ai_diagnosis_messages,
+    serialize_ai_evidence_pack,
 )
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -58,6 +59,16 @@ def extract_tagged_json(content: str, tag_name: str) -> object:
     start_index = content.index(opening_tag) + len(opening_tag)
     end_index = content.index(closing_tag, start_index)
     return json.loads(content[start_index:end_index])
+
+
+def extract_tagged_text(content: str, tag_name: str) -> str:
+    """从测试消息的固定标签之间读取原始文本。"""
+
+    opening_tag = f"<{tag_name}>\n"
+    closing_tag = f"\n</{tag_name}>"
+    start_index = content.index(opening_tag) + len(opening_tag)
+    end_index = content.index(closing_tag, start_index)
+    return content[start_index:end_index]
 
 
 def test_messages_have_separate_system_and_human_roles() -> None:
@@ -131,3 +142,36 @@ def test_same_evidence_pack_produces_deterministic_messages() -> None:
     assert [message.content for message in first_messages] == [
         message.content for message in second_messages
     ]
+
+
+def test_evidence_pack_serialization_is_stable_compact_and_keeps_unicode() -> None:
+    """缓存摘要和 Prompt 共用的 JSON 必须稳定、紧凑且保留 Unicode。"""
+
+    evidence_pack = build_evidence_pack(details="断言失败：预期 200，实际 500")
+
+    serialized = serialize_ai_evidence_pack(evidence_pack)
+    expected = json.dumps(
+        evidence_pack.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    assert serialized == expected
+    assert "断言失败" in serialized
+    assert "\\u" not in serialized
+    assert ": " not in serialized
+    assert ", " not in serialized
+
+
+def test_human_message_uses_exact_stable_evidence_serialization() -> None:
+    """模型实际收到的证据文本必须与后续计算摘要的文本逐字一致。"""
+
+    evidence_pack = build_evidence_pack(details="AssertionError")
+    messages = build_ai_diagnosis_messages(evidence_pack)
+    human_content = messages[1].content
+
+    assert isinstance(human_content, str)
+    assert extract_tagged_text(human_content, "evidence_pack") == (
+        serialize_ai_evidence_pack(evidence_pack)
+    )
