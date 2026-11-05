@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from ci_failure_intelligence.api.routes import (
+    ai_diagnosis,
     ci_failure_query,
     ci_ingest,
     health,
@@ -19,3 +20,6 @@ api_router.include_router(ci_ingest.router)
 
 # 将受读取令牌保护的 CI 失败详情查询路由复制到顶层路由器。
 api_router.include_router(ci_failure_query.router)
+
+# 将受独立付费触发令牌保护的 AI 诊断路由注册到应用。
+api_router.include_router(ai_diagnosis.router)

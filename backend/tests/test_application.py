@@ -2,19 +2,19 @@
 
 from typing import cast
 
+import ci_failure_intelligence.application as application_module
 import pytest
+from ci_failure_intelligence.core.config import Settings
+from ci_failure_intelligence.infrastructure.redis_nonce_store import RedisNonceStore
+from ci_failure_intelligence.security.nonce_store import NonceStore
 from fastapi.testclient import TestClient
+from langchain_deepseek import ChatDeepSeek
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
 )
-
-import ci_failure_intelligence.application as application_module
-from ci_failure_intelligence.core.config import Settings
-from ci_failure_intelligence.infrastructure.redis_nonce_store import RedisNonceStore
-from ci_failure_intelligence.security.nonce_store import NonceStore
 
 
 class FakeManagedRedisClient:
@@ -35,6 +35,62 @@ class FakeDatabaseEngine:
 
     async def dispose(self) -> None:
         self.disposed = True
+
+
+def test_application_creates_and_stores_shared_deepseek_client(
+    test_settings: Settings,
+    nonce_store: NonceStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """默认路径只创建并保存模型客户端，不应在启动时发起模型调用。"""
+
+    fake_deepseek_client = object()
+    received_settings: list[Settings] = []
+
+    def fake_create_deepseek_client(settings: Settings) -> ChatDeepSeek:
+        received_settings.append(settings)
+        return cast(ChatDeepSeek, fake_deepseek_client)
+
+    monkeypatch.setattr(
+        application_module,
+        "create_deepseek_client",
+        fake_create_deepseek_client,
+    )
+
+    app = application_module.create_app(
+        settings=test_settings,
+        nonce_store=nonce_store,
+    )
+
+    assert received_settings == [test_settings]
+    assert app.state.deepseek_client is fake_deepseek_client
+
+
+def test_application_preserves_injected_deepseek_client(
+    test_settings: Settings,
+    nonce_store: NonceStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """测试注入的假模型客户端应原样保存，不能再创建真实客户端。"""
+
+    injected_client = object()
+
+    def forbidden_create_deepseek_client(_: Settings) -> ChatDeepSeek:
+        raise AssertionError("注入客户端后不得创建真实 DeepSeek 客户端")
+
+    monkeypatch.setattr(
+        application_module,
+        "create_deepseek_client",
+        forbidden_create_deepseek_client,
+    )
+
+    app = application_module.create_app(
+        settings=test_settings,
+        nonce_store=nonce_store,
+        deepseek_client=cast(ChatDeepSeek, injected_client),
+    )
+
+    assert app.state.deepseek_client is injected_client
 
 
 def test_application_lifespan_closes_factory_created_redis_client(

@@ -11,16 +11,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ci_failure_intelligence.core.config import Settings
 
 FAILURE_READ_UNAUTHORIZED_DETAIL = "失败详情读取凭据无效"
+AI_DIAGNOSIS_TRIGGER_UNAUTHORIZED_DETAIL = "AI 诊断触发凭据无效"
 
 # 只负责解析 Authorization: Bearer <token>。
 # auto_error=False 让项目统一处理缺少或错误凭据的响应。
 failure_read_bearer = HTTPBearer(auto_error=False)
+# 付费 AI 操作使用独立安全方案，不能与失败详情读取凭据混用。
+ai_diagnosis_trigger_bearer = HTTPBearer(auto_error=False)
 
 
 def require_failure_read_token(
     request: Request,
     credentials: Annotated[
         HTTPAuthorizationCredentials | None,
+        # 处理请求时，先执行这个依赖，再把结果注入 credentials
         Depends(failure_read_bearer),
     ],
 ) -> None:
@@ -52,6 +56,41 @@ def require_failure_read_token(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=FAILURE_READ_UNAUTHORIZED_DETAIL,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+def require_ai_diagnosis_trigger_token(
+    request: Request,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(ai_diagnosis_trigger_bearer),
+    ],
+) -> None:
+    """验证调用方是否持有 AI 诊断付费触发令牌。
+
+    Args:
+        request: 当前 HTTP 请求，用于取得应用运行配置。
+        credentials: FastAPI 从 Authorization 请求头解析出的
+            Bearer 凭据；缺失或认证方案错误时为空。
+
+    Raises:
+        HTTPException: 请求没有提供有效的 AI 诊断触发令牌。
+    """
+
+    settings = cast(Settings, request.app.state.settings)
+    expected_token = settings.ai_diagnosis_trigger_token.get_secret_value()
+
+    supplied_token = credentials.credentials if credentials is not None else ""
+    token_matches = secrets.compare_digest(
+        supplied_token,
+        expected_token,
+    )
+
+    if credentials is None or not token_matches:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=AI_DIAGNOSIS_TRIGGER_UNAUTHORIZED_DETAIL,
             headers={"WWW-Authenticate": "Bearer"},
         )
 

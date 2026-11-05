@@ -11,6 +11,9 @@ from pydantic_settings import SettingsConfigDict
 
 TEST_SECRET = SecretStr("test-only-secret-with-at-least-32-bytes")
 TEST_FAILURE_READ_TOKEN = SecretStr("test-only-failure-read-token-with-32-bytes")
+TEST_AI_DIAGNOSIS_TRIGGER_TOKEN = SecretStr(
+    "test-only-ai-trigger-token-with-at-least-32-bytes"
+)
 TEST_REDIS_PASSWORD = SecretStr("test-only-redis-password-with-32-bytes")
 TEST_POSTGRES_PASSWORD = SecretStr("test-only-postgres-password-with-32-bytes")
 TEST_DEEPSEEK_API_KEY = SecretStr("test-only-deepseek-api-key")
@@ -40,8 +43,10 @@ def create_test_settings(**overrides: object) -> Settings:
     settings_data: dict[str, object] = {
         "ingest_hmac_secret": TEST_SECRET,
         "failure_read_token": TEST_FAILURE_READ_TOKEN,
+        "ai_diagnosis_trigger_token": TEST_AI_DIAGNOSIS_TRIGGER_TOKEN,
         "redis_password": TEST_REDIS_PASSWORD,
         "postgres_password": TEST_POSTGRES_PASSWORD,
+        "deepseek_api_key": TEST_DEEPSEEK_API_KEY,
     }
     settings_data.update(overrides)
 
@@ -67,12 +72,15 @@ def test_deepseek_settings_does_not_require_unrelated_backend_secrets() -> None:
     assert settings.deepseek_model == "deepseek-flash"
 
 
-def test_full_settings_does_not_require_deepseek_api_key() -> None:
-    """尚未使用 AI 时，现有 FastAPI 配置不应被 DeepSeek Key 阻断。"""
+def test_full_settings_includes_deepseek_and_ai_trigger_configuration() -> None:
+    """完整 FastAPI 配置应同时具备模型调用和付费触发配置。"""
 
     settings = create_test_settings()
 
     assert settings.redis_username == "cfi_ingest"
+    assert settings.deepseek_model == "deepseek-flash"
+    assert str(settings.deepseek_api_key) == "**********"
+    assert str(settings.ai_diagnosis_trigger_token) == "**********"
 
 
 def test_deepseek_connection_uses_bounded_defaults() -> None:
@@ -148,6 +156,8 @@ def test_full_settings_still_requires_ingest_and_redis_secrets(
     # 禁用进程环境变量和 .env，确保测试只观察类本身的必填字段。
     monkeypatch.delenv("CFI_INGEST_HMAC_SECRET", raising=False)
     monkeypatch.delenv("CFI_FAILURE_READ_TOKEN", raising=False)
+    monkeypatch.delenv("CFI_AI_DIAGNOSIS_TRIGGER_TOKEN", raising=False)
+    monkeypatch.delenv("CFI_DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("CFI_REDIS_PASSWORD", raising=False)
 
     with pytest.raises(ValidationError) as captured_error:
@@ -156,6 +166,8 @@ def test_full_settings_still_requires_ingest_and_redis_secrets(
     missing_fields = {error["loc"] for error in captured_error.value.errors()}
     assert ("ingest_hmac_secret",) in missing_fields
     assert ("failure_read_token",) in missing_fields
+    assert ("ai_diagnosis_trigger_token",) in missing_fields
+    assert ("deepseek_api_key",) in missing_fields
     assert ("redis_password",) in missing_fields
 
 
@@ -173,6 +185,23 @@ def test_failure_read_token_rejects_short_value() -> None:
     with pytest.raises(ValidationError):
         create_test_settings(
             failure_read_token=SecretStr("too-short"),
+        )
+
+
+def test_ai_diagnosis_trigger_token_is_masked() -> None:
+    """付费触发令牌不能通过配置对象的普通字符串表示泄露。"""
+
+    settings = create_test_settings()
+
+    assert str(settings.ai_diagnosis_trigger_token) == "**********"
+
+
+def test_ai_diagnosis_trigger_token_rejects_short_value() -> None:
+    """拒绝不足 32 个 UTF-8 字节的 AI 诊断触发令牌。"""
+
+    with pytest.raises(ValidationError):
+        create_test_settings(
+            ai_diagnosis_trigger_token=SecretStr("too-short"),
         )
 
 

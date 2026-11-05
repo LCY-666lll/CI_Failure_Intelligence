@@ -5,6 +5,18 @@ import logging
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from ci_failure_intelligence.service.ai_diagnosis import (
+    AiDiagnosisProviderError,
+    AiDiagnosisStructuredOutputError,
+)
+from ci_failure_intelligence.service.ai_diagnosis_persistence import (
+    AiDiagnosisLeaseLostError,
+    AiDiagnosisPersistenceUnavailableError,
+)
+from ci_failure_intelligence.service.ai_diagnosis_validation import (
+    AiDiagnosisEvidenceReferenceError,
+)
+from ci_failure_intelligence.service.ai_evidence import AiEvidenceBuildError
 from ci_failure_intelligence.service.ci_failure_persistence import (
     CiFailurePayloadConflictError,
     CiFailurePersistenceUnavailableError,
@@ -23,6 +35,13 @@ CI_FAILURE_PERSISTENCE_UNAVAILABLE_DETAIL = "CI 失败事件存储暂时不可�
 CI_FAILURE_QUERY_NOT_FOUND_DETAIL = "CI 失败事件不存在"
 CI_FAILURE_QUERY_UNAVAILABLE_DETAIL = "CI 失败详情查询暂时不可用"
 CI_RUN_LIST_UNAVAILABLE_DETAIL = "CI 事件列表查询暂时不可用"
+
+AI_DIAGNOSIS_EVIDENCE_UNAVAILABLE_DETAIL = (
+    "当前 CI 事件没有可用于 AI 诊断的完整失败证据"
+)
+AI_DIAGNOSIS_SERVICE_UNAVAILABLE_DETAIL = "AI 诊断服务暂时不可用"
+AI_DIAGNOSIS_UPSTREAM_INVALID_DETAIL = "AI 诊断服务返回了无效结果"
+AI_DIAGNOSIS_LEASE_LOST_DETAIL = "AI 诊断任务执行权已经失效，请重新查询"
 
 # 获取当前模块的日志记录器
 logger = logging.getLogger(__name__)
@@ -144,6 +163,101 @@ async def handle_ci_run_list_unavailable(
     )
 
 
+async def handle_ai_diagnosis_evidence_unavailable(
+    request: Request,
+    error: Exception,
+) -> JSONResponse:
+    """把当前事件无法形成诊断证据转换为 HTTP 409。
+
+    Args:
+        request: 触发异常的 HTTP 请求，本处理器不读取请求内容。
+        error: 证据构造服务抛出的稳定业务异常。
+
+    Returns:
+        JSONResponse: 不泄露原始失败文本的固定 409 响应。
+    """
+
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": AI_DIAGNOSIS_EVIDENCE_UNAVAILABLE_DETAIL},
+    )
+
+
+async def handle_ai_diagnosis_service_unavailable(
+    request: Request,
+    error: Exception,
+) -> JSONResponse:
+    """把模型或诊断任务存储故障转换为可重试的 HTTP 503。
+
+    Args:
+        request: 触发异常的 HTTP 请求，本处理器不读取请求内容。
+        error: 模型调用或诊断任务持久化异常。
+
+    Returns:
+        JSONResponse: 不泄露内部异常和模型内容的固定 503 响应。
+    """
+
+    logger.error(
+        "AI 诊断服务暂时不可用",
+        exc_info=(type(error), error, error.__traceback__),
+    )
+
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": AI_DIAGNOSIS_SERVICE_UNAVAILABLE_DETAIL},
+    )
+
+
+async def handle_ai_diagnosis_upstream_invalid(
+    request: Request,
+    error: Exception,
+) -> JSONResponse:
+    """把模型无效结构或虚构证据引用转换为 HTTP 502。
+
+    Args:
+        request: 触发异常的 HTTP 请求，本处理器不读取请求内容。
+        error: 已由项目校验发现的上游模型结果异常。
+
+    Returns:
+        JSONResponse: 不返回模型原始输出的固定 502 响应。
+    """
+
+    logger.error(
+        "AI 诊断上游结果无效",
+        exc_info=(type(error), error, error.__traceback__),
+    )
+
+    return JSONResponse(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        content={"detail": AI_DIAGNOSIS_UPSTREAM_INVALID_DETAIL},
+    )
+
+
+async def handle_ai_diagnosis_lease_lost(
+    request: Request,
+    error: Exception,
+) -> JSONResponse:
+    """把诊断执行权失效转换为 HTTP 409。
+
+    Args:
+        request: 触发异常的 HTTP 请求，本处理器不读取请求内容。
+        error: 当前执行者写回前发现租约已经失效的异常。
+
+    Returns:
+        JSONResponse: 提示客户端重新查询的固定 409 响应。
+    """
+
+    logger.warning(
+        "AI 诊断任务租约失效",
+        exc_info=(type(error), error, error.__traceback__),
+    )
+
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": AI_DIAGNOSIS_LEASE_LOST_DETAIL},
+    )
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """为 FastAPI 应用注册 CI 失败事件异常处理规则。
         “异常类型 → 处理函数”
@@ -171,4 +285,28 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(
         CiRunListUnavailableError,
         handle_ci_run_list_unavailable,
+    )
+    app.add_exception_handler(
+        AiEvidenceBuildError,
+        handle_ai_diagnosis_evidence_unavailable,
+    )
+    app.add_exception_handler(
+        AiDiagnosisProviderError,
+        handle_ai_diagnosis_service_unavailable,
+    )
+    app.add_exception_handler(
+        AiDiagnosisPersistenceUnavailableError,
+        handle_ai_diagnosis_service_unavailable,
+    )
+    app.add_exception_handler(
+        AiDiagnosisStructuredOutputError,
+        handle_ai_diagnosis_upstream_invalid,
+    )
+    app.add_exception_handler(
+        AiDiagnosisEvidenceReferenceError,
+        handle_ai_diagnosis_upstream_invalid,
+    )
+    app.add_exception_handler(
+        AiDiagnosisLeaseLostError,
+        handle_ai_diagnosis_lease_lost,
     )

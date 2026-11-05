@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from langchain_deepseek import ChatDeepSeek
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ci_failure_intelligence.api.exception_handlers import (
@@ -14,6 +15,9 @@ from ci_failure_intelligence.api.exception_handlers import (
 )
 from ci_failure_intelligence.api.router import api_router
 from ci_failure_intelligence.core.config import Settings
+from ci_failure_intelligence.infrastructure.ai.deepseek_client import (
+    create_deepseek_client,
+)
 from ci_failure_intelligence.infrastructure.database import (
     create_database_engine,
     create_database_session_factory,
@@ -37,6 +41,7 @@ def create_app(
     settings: Settings,
     nonce_store: NonceStore | None = None,
     database_engine: AsyncEngine | None = None,
+    deepseek_client: ChatDeepSeek | None = None,
 ) -> FastAPI:
     """使用已经校验的运行配置创建独立 FastAPI 应用。
 
@@ -49,6 +54,9 @@ def create_app(
         database_engine: 可选的异步数据库 Engine。
             未提供时根据 Settings 创建并由应用生命周期释放；
             自动化测试可以注入自己的 Engine。
+        deepseek_client: 可选的 DeepSeek LangChain 客户端。
+            未提供时根据 Settings 创建真实客户端对象；
+            自动化测试可以注入假客户端，避免模型网络请求。
 
     Returns:
         FastAPI: 已保存当前配置并完成路由注册的应用实例。
@@ -82,6 +90,13 @@ def create_app(
 
     # Session工厂本身不持有独立连接，可由整个应用共享。
     database_session_factory = create_database_session_factory(resolved_database_engine)
+
+    # 正常运行时创建配置完成但尚未发起网络请求的模型客户端。
+    # 测试可以注入假客户端，验证 HTTP 和编排逻辑而不产生费用。
+    if deepseek_client is None:
+        resolved_deepseek_client = create_deepseek_client(settings)
+    else:
+        resolved_deepseek_client = deepseek_client
 
     # 进入 async with
     # → 执行到 yield
@@ -146,6 +161,9 @@ def create_app(
 
     # 后续数据库依赖会为每次业务操作调用该工厂创建独立Session。
     app.state.database_session_factory = database_session_factory
+
+    # AI 路由从当前应用实例取得共享客户端，不在每次请求中重复创建。
+    app.state.deepseek_client = resolved_deepseek_client
 
     # 把已经汇总的健康检查和CI接入路由注册到当前应用实例。
     app.include_router(api_router)

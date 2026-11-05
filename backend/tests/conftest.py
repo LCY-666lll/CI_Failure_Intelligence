@@ -35,6 +35,10 @@ def test_settings(test_hmac_secret: bytes) -> Settings:
     return Settings(
         ingest_hmac_secret=SecretStr(test_hmac_secret.decode("utf-8")),
         failure_read_token=SecretStr("test-only-failure-read-token-with-32-bytes"),
+        ai_diagnosis_trigger_token=SecretStr(
+            "test-only-ai-trigger-token-with-at-least-32-bytes"
+        ),
+        deepseek_api_key=SecretStr("sk-test-only-deepseek-api-key"),
         ingest_max_body_bytes=1024 * 1024,
         redis_password=SecretStr("test-only-redis-password-with-32-bytes"),
         postgres_password=SecretStr("test-only-postgres-password-with-32-bytes"),

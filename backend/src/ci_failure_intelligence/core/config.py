@@ -206,7 +206,9 @@ class PostgresSettings(BaseSettings):
 
 
 # 继承 BaseSettings：获得读取运行配置的能力，把环境变量和 .env 作为字段数据来源
-class Settings(PostgresSettings):
+# 完整 FastAPI 配置由三部分组成：
+# Settings 自己的字段 + PostgresSettings 数据库字段 + DeepSeekSettings 模型字段
+class Settings(PostgresSettings, DeepSeekSettings):
     """集中描述完整 FastAPI 后端的运行配置:
     Settings 自己声明 HMAC 和 Redis 字段 +
     继承 PostgresSettings 中的数据库字段 = FastAPI 完整运行配置
@@ -217,6 +219,9 @@ class Settings(PostgresSettings):
 
     # 失败详情读取接口使用独立令牌，不能与负责CI报告写入认证的HMAC密钥复用。
     failure_read_token: SecretStr
+
+    # 触发付费 AI 诊断使用独立令牌，不能与只读令牌复用。
+    ai_diagnosis_trigger_token: SecretStr
 
     # 这个属性是整数，没有提供时使用默认值，提供的值必须大于 0
     ingest_max_body_bytes: int = Field(
@@ -338,6 +343,31 @@ class Settings(PostgresSettings):
 
         if len(token_bytes) < 32:
             raise ValueError("失败详情读取令牌的UTF-8编码长度必须至少为32字节")
+
+        return value
+
+    @field_validator("ai_diagnosis_trigger_token")
+    @classmethod
+    def validate_ai_diagnosis_trigger_token(
+        cls,
+        value: SecretStr,
+    ) -> SecretStr:
+        """确保 AI 诊断触发令牌具有足够的 UTF-8 字节长度。
+
+        Args:
+            value: 从运行环境读取并转换为 SecretStr 的触发令牌。
+
+        Returns:
+            SecretStr: 通过最小字节长度校验的原始令牌。
+
+        Raises:
+            ValueError: 令牌经过 UTF-8 编码后不足 32 字节。
+        """
+
+        token_bytes = value.get_secret_value().encode("utf-8")
+
+        if len(token_bytes) < 32:
+            raise ValueError("AI 诊断触发令牌的 UTF-8 编码长度必须至少为 32 字节")
 
         return value
 
