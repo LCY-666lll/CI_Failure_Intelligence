@@ -8,8 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ci_failure_intelligence.schemas.ai_diagnosis import AiDiagnosis
 
 
-class AiDiagnosisResponse(BaseModel):
-    """描述生成、缓存命中或正在处理的 AI 诊断结果。"""
+class AiDiagnosisResponseBase(BaseModel):
+    """定义AI诊断HTTP响应共享的结果字段。"""
 
     model_config = ConfigDict(
         strict=True,
@@ -17,14 +17,6 @@ class AiDiagnosisResponse(BaseModel):
     )
 
     event_id: int = Field(gt=0)
-
-    status: Literal[
-        "generated",
-        "cached",
-        "in_progress",
-    ]
-
-    attempt_count: int = Field(ge=1)
 
     diagnosis: AiDiagnosis | None = None
     model_name: str | None = None
@@ -35,12 +27,25 @@ class AiDiagnosisResponse(BaseModel):
 
     lease_expires_at: datetime | None = None
 
+
+class AiDiagnosisResponse(AiDiagnosisResponseBase):
+    """描述一次付费触发请求的诊断结果。"""
+
+    status: Literal[
+        "generated",
+        "cached",
+        "in_progress",
+    ]
+
+    # POST只可能处理已经开始过的任务，因此至少为1。
+    attempt_count: int = Field(ge=1)
+
     @model_validator(mode="after")
     def validate_status_fields(self) -> Self:
-        """确保响应字段与当前诊断状态保持一致。
+        """确保触发响应字段与本次请求结果保持一致。
 
         Returns:
-            Self: 字段组合符合状态语义的当前响应。
+            Self: 字段组合符合触发结果语义的当前响应。
 
         Raises:
             ValueError: 完成状态缺少诊断，或处理中状态泄露诊断结果。
@@ -73,3 +78,25 @@ class AiDiagnosisResponse(BaseModel):
             raise ValueError("正在处理的 AI 诊断响应不能包含模型调用结果")
 
         return self
+
+
+class AiDiagnosisReadResponse(AiDiagnosisResponseBase):
+    """描述数据库中当前保存的AI诊断状态。"""
+
+    status: Literal[
+        "not_started",
+        "processing",
+        "completed",
+        "failed",
+    ]
+
+    # 尚未开始时为0；数据库已有任务时至少为1。
+    attempt_count: int = Field(ge=0)
+
+    # 只有failed状态返回安全、有限的错误摘要。
+    error_code: str | None = None
+    error_message: str | None = None
+
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    updated_at: datetime | None = None

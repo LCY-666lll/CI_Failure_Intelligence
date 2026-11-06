@@ -1,4 +1,4 @@
-"""提供受独立触发令牌保护的 AI 诊断接口。"""
+"""提供分别受读取权限和付费触发权限保护的 AI 诊断接口。"""
 
 from typing import Annotated, cast
 
@@ -14,15 +14,21 @@ from langchain_deepseek import ChatDeepSeek
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ci_failure_intelligence.api.dependencies import (
+    get_database_session,
     require_ai_diagnosis_trigger_token,
+    require_failure_read_token,
 )
 from ci_failure_intelligence.core.config import Settings
 from ci_failure_intelligence.schemas.ai_diagnosis_api import (
+    AiDiagnosisReadResponse,
     AiDiagnosisResponse,
 )
 from ci_failure_intelligence.service.ai_diagnosis_orchestration import (
     AiDiagnosisOrchestrationStatus,
     orchestrate_ai_diagnosis,
+)
+from ci_failure_intelligence.service.ai_diagnosis_query import (
+    get_ai_diagnosis,
 )
 
 router = APIRouter(
@@ -105,4 +111,34 @@ async def diagnose_ci_failure(
         output_tokens=result.output_tokens,
         total_tokens=result.total_tokens,
         lease_expires_at=result.lease_expires_at,
+    )
+
+@router.get(
+    "/{event_id}/diagnosis",
+    response_model=AiDiagnosisReadResponse,
+    dependencies=[Depends(require_failure_read_token)]
+)
+async def read_ai_diagnosis(
+    event_id:Annotated[int,Path(gt=0)],
+    session:Annotated[AsyncSession,Depends(get_database_session)]
+) -> AiDiagnosisReadResponse:
+    """读取指定事件当前保存的 AI 诊断状态。
+
+    Args:
+        event_id: 要读取的 CI 事件正整数主键。
+        session: FastAPI 为本次请求提供的异步数据库 Session。
+
+    Returns:
+        AiDiagnosisReadResponse: 尚未开始、正在处理、
+            已完成或失败的当前诊断状态。
+
+    Raises:
+        CiFailureQueryNotFoundError: 指定 CI 事件不存在。
+        AiDiagnosisPersistenceUnavailableError: 诊断存储不可用，
+            或已保存的诊断不符合当前响应契约。
+    """
+
+    return await get_ai_diagnosis(
+        session=session,
+        event_id=event_id
     )

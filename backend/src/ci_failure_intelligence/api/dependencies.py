@@ -20,6 +20,38 @@ failure_read_bearer = HTTPBearer(auto_error=False)
 ai_diagnosis_trigger_bearer = HTTPBearer(auto_error=False)
 
 
+def _require_bearer_token(
+    credentials: HTTPAuthorizationCredentials | None,
+    expected_token: str,
+    unauthorized_detail: str,
+) -> None:
+    """安全比较 Bearer 令牌，并统一构造认证失败响应。
+
+    Args:
+        credentials: FastAPI 从 Authorization 请求头解析出的凭据；
+            请求头缺失或认证方案不正确时为空。
+        expected_token: 当前权限边界对应的服务端真实令牌。
+        unauthorized_detail: 认证失败时返回给调用方的固定安全消息。
+
+    Raises:
+        HTTPException: 请求没有提供与当前权限边界匹配的 Bearer 令牌。
+    """
+
+    # 即使凭据缺失也执行一次比较，让所有失败分支使用同一判断出口。
+    supplied_token = credentials.credentials if credentials is not None else ""
+    token_matches = secrets.compare_digest(
+        supplied_token,
+        expected_token,
+    )
+
+    if credentials is None or not token_matches:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=unauthorized_detail,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 def require_failure_read_token(
     request: Request,
     credentials: Annotated[
@@ -42,22 +74,12 @@ def require_failure_read_token(
     # create_app() 已把当前应用的 Settings 保存到 app.state。
     # cast 只帮助静态检查器理解动态属性，不会修改运行时对象。
     settings = cast(Settings, request.app.state.settings)
-    expected_token = settings.failure_read_token.get_secret_value()
-
-    # 即使凭据缺失也执行一次比较，让所有失败分支使用同一判断出口。
-    supplied_token = credentials.credentials if credentials is not None else ""
-    token_matches = secrets.compare_digest(
-        supplied_token,
-        expected_token,
+    # 依赖抛出异常后，FastAPI 不会进入数据库依赖或路由函数。
+    _require_bearer_token(
+        credentials=credentials,
+        expected_token=settings.failure_read_token.get_secret_value(),
+        unauthorized_detail=FAILURE_READ_UNAUTHORIZED_DETAIL,
     )
-
-    if credentials is None or not token_matches:
-        # 依赖抛出异常后，FastAPI 不会进入数据库依赖或路由函数。
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=FAILURE_READ_UNAUTHORIZED_DETAIL,
-            headers={"WWW-Authenticate": "Bearer"},
-        )
 
 
 def require_ai_diagnosis_trigger_token(
@@ -79,20 +101,11 @@ def require_ai_diagnosis_trigger_token(
     """
 
     settings = cast(Settings, request.app.state.settings)
-    expected_token = settings.ai_diagnosis_trigger_token.get_secret_value()
-
-    supplied_token = credentials.credentials if credentials is not None else ""
-    token_matches = secrets.compare_digest(
-        supplied_token,
-        expected_token,
+    _require_bearer_token(
+        credentials=credentials,
+        expected_token=settings.ai_diagnosis_trigger_token.get_secret_value(),
+        unauthorized_detail=AI_DIAGNOSIS_TRIGGER_UNAUTHORIZED_DETAIL,
     )
-
-    if credentials is None or not token_matches:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=AI_DIAGNOSIS_TRIGGER_UNAUTHORIZED_DETAIL,
-            headers={"WWW-Authenticate": "Bearer"},
-        )
 
 
 async def get_database_session(request: Request) -> AsyncIterator[AsyncSession]:
