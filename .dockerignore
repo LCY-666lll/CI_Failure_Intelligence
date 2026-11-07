@@ -1,0 +1,33 @@
+# 排除Git历史和本机编辑器配置。
+.git/
+.vscode/
+
+# 密钥与环境配置由容器启动时提供。
+.env
+.env.*
+**/.env
+**/.env.*
+.secrets/
+
+# Windows虚拟环境不能复制到Linux使用。
+**/.venv/
+
+# 排除Python、测试和检查工具生成的缓存。
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+
+# 后端生产运行不需要本地文档、报告和测试代码。
+AGENTS.md
+docs/
+reports/
+backend/tests/
+
+# 排除本机生成的打包产物。
+**/*.egg-info/
+**/build/
+**/dist/
+**/node_modules/
+.playwright-cli/

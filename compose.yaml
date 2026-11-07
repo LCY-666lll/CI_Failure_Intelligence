@@ -2,6 +2,57 @@
 name: ci-failure-intelligence
 
 services:
+  backend:
+    # 使用项目根目录的Dockerfile构建后端镜像。
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    image: ci-failure-intelligence-backend:local
+    restart: unless-stopped
+
+    # 运行时读取私有配置，不把.env复制进镜像。
+    env_file:
+      - .env
+
+    environment:
+      # 容器通过Compose服务名访问数据库和Redis。
+      # 这里覆盖.env中的本机地址，不修改.env文件本身。
+      CFI_POSTGRES_HOST: postgres
+      CFI_POSTGRES_PORT: "5432"
+      CFI_REDIS_HOST: redis
+      CFI_REDIS_PORT: "6379"
+
+    ports:
+      # 保留现有Windows后端的8001，新容器通过8002访问。
+      # 只映射到本机，当前不开放公网访问。
+      - "127.0.0.1:8002:8000"
+
+    depends_on:
+      # Compose 启动 backend 前，需要等待 postgres 服务通过健康检查
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    healthcheck:
+      # 在后端容器内部发起HTTP请求，不依赖额外安装curl。
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+    # 当前后端的初始上限，加入FastEmbed后依据实测调整。
+    mem_limit: 768m
+
+    # 给Uvicorn时间结束请求并释放数据库、Redis客户端。
+    stop_grace_period: 30s
+
   redis:
     image: redis:8.2.9-alpine
 
@@ -126,6 +177,28 @@ services:
     # 停止时给PostgreSQL时间完成事务回滚和数据落盘。
     stop_grace_period: 30s
 
+
+  qdrant:
+    # 使用本批已核对的服务端版本。
+    image: qdrant/qdrant:v1.20.0
+    restart: unless-stopped
+
+    environment:
+      # Compose从.env读取；缺失或为空时停止，避免无认证启动。
+      QDRANT__SERVICE__API_KEY: ${CFI_QDRANT_API_KEY:?Set CFI_QDRANT_API_KEY in .env}
+
+    ports:
+      # REST接口只映射到本机，不开放公网。
+      - "127.0.0.1:6333:6333"
+
+    volumes:
+      # 容器重建后继续保留向量索引。
+      - qdrant_data:/qdrant/storage
+
+    # 小数据集的初始保护上限，后续根据实测调整。
+    mem_limit: 256m
+    stop_grace_period: 30s
+
 secrets:
   redis_password:
     # Redis本地开发密码只从被Git忽略的文件读取。
@@ -141,3 +214,6 @@ volumes:
 
   # PostgreSQL业务数据使用独立volume，不复用Spike项目的数据。
   postgres_data:
+
+  # Qdrant派生检索索引使用独立数据卷。
+  qdrant_data:

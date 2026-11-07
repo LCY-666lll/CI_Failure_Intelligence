@@ -27,6 +27,20 @@
 - `GET /api/v1/ci-runs/{event_id}/diagnosis`：使用读取凭据查询已有诊断及当前任务状态。
 - `GET /health/live`：进程存活检查。
 
+## 本机容器运行
+
+已有Dockerfile和Compose后端服务；本机容器化已验证，云端部署仍待完成。
+以下操作以已经配置好私有`.env`、`.secrets/`、数据库`cfi_app`账号和Alembic表结构为前提，
+不是新服务器的完整初始化流程：
+
+```powershell
+docker compose build backend
+docker compose up -d --wait backend
+```
+
+后端仅通过本机`http://127.0.0.1:8002`访问，健康接口为`/health/live`；其他接口仍需
+各自的认证凭据。容器通过`postgres`、`redis`服务名访问基础设施，密钥在运行时注入。
+
 ## MVP 截止时间
 
 项目按 2026-11-30 的有效开发与部署硬截止日期推进。MVP 必须包含 Qdrant dense
