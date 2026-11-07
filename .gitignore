@@ -19,6 +19,7 @@ reports/
 node_modules/
 dist/
 coverage/
+.playwright-cli/
 
 # IDE and operating system
 .idea/
