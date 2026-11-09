@@ -9,6 +9,7 @@
 通过后才能创建FastAPI应用
 """
 
+from pathlib import Path
 from typing import Literal
 
 # field_validator 用来登记一个字段校验函数。
@@ -123,6 +124,57 @@ class DeepSeekSettings(BaseSettings):
             raise ValueError("DeepSeek API Key 首尾不能包含空白字符")
 
         return value
+
+
+class RetrievalSettings(BaseSettings):
+    """描述历史失败索引与检索共用的运行配置。"""
+
+    # 复用项目已有的环境读取规则，忽略其他功能的配置字段。
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_prefix="CFI_",
+        extra="ignore",
+    )
+
+    # 本机 Python 通过 Docker 映射端口访问 Qdrant。
+    # 容器内运行时，需要由部署配置覆盖为 Qdrant 服务地址。
+    qdrant_url: str = Field(
+        default="http://127.0.0.1:6333",
+        min_length=1,
+    )
+
+    # 复用现有私有 Key；无默认值，普通打印只显示星号。
+    # 当前使用生成的 ASCII Key，至少要求 32 个字符。
+    qdrant_api_key: SecretStr = Field(min_length=32)
+
+    # 限制客户端请求等待时间，避免检索故障时无限阻塞。
+    qdrant_timeout_seconds: int = Field(
+        default=5,
+        gt=0,
+        le=30,
+    )
+
+    # 集合名带索引版本；后续改变模型或索引规则时明确重建。
+    qdrant_collection: str = Field(
+        default="ci_failure_details_v1",
+        min_length=1,
+    )
+
+    # 固定已经验证的模型，拒绝环境配置误切换为其他模型。
+    embedding_model: Literal[
+        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    ] = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+    # 相对路径以进程工作目录为起点，本机已有下载缓存位于这里。
+    embedding_cache_dir: Path = Path("data/local/embedding-models")
+
+    # 按目标服务器的 2 核预算配置推理线程。
+    embedding_threads: int = Field(
+        default=2,
+        ge=1,
+        le=2,
+    )
 
 
 class PostgresSettings(BaseSettings):
