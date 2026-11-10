@@ -56,6 +56,7 @@ async def search_failure_candidates(
         raise ValueError("检索需要有效事件、仓库 ID 和带时区的接收时间")
 
     # 查询和索引使用同一套文本整理规则。
+    # 把当前错误变成查询文本
     text = build_failure_index_text(detail)
     vectors = await asyncio.to_thread(
         list,

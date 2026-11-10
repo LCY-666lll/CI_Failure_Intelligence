@@ -59,7 +59,13 @@ def validate_ai_diagnosis_evidence(
             不属于本次 evidence pack。
     """
 
+    # 只认可最终实际发送给模型的当前证据。
     available_evidence_ids = {failure.evidence_id for failure in evidence_pack.failures}
+
+    # 加入最终实际发送的历史证据，不从数据库扩大引用范围。
+    available_evidence_ids.update(
+        history.evidence_id for history in evidence_pack.history
+    )
 
     referenced_evidence_ids = {
         evidence_id

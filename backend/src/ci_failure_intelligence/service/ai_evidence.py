@@ -1,18 +1,26 @@
 """构造发送给外部模型的有限、脱敏 CI 失败证据。"""
 
+import json
 import re
+from typing import Literal
 
 from ci_failure_intelligence.schemas.ai_evidence import (
     AiEvidencePack,
     AiFailureEvidence,
+    AiHistoricalFailureEvidence,
 )
 from ci_failure_intelligence.schemas.ci_failure_query import (
     CiFailureDetailResponse,
     CiFailureQueryResponse,
 )
+from ci_failure_intelligence.schemas.failure_history import (
+    HistoricalFailureResponse,
+)
 
 # 单次模型诊断最多选择前 20 个 failure/error 节点。
 MAX_FAILURES_PER_EVIDENCE_PACK = 20
+# 历史只使用检索服务给出的有序前缀，不挤占当前失败的位置。
+MAX_HISTORY_PER_EVIDENCE_PACK = 5
 # 按最终 JSON 的 UTF-8 字节数限制整个模型证据包。
 MAX_EVIDENCE_PACK_BYTES = 32 * 1024
 
@@ -103,6 +111,24 @@ class AiEvidencePackTooLargeError(AiEvidenceBuildError):
             f"event_id={event_id}, actual_bytes={actual_bytes}, "
             f"max_bytes={MAX_EVIDENCE_PACK_BYTES}"
         )
+
+
+def serialize_ai_evidence_pack(evidence_pack: AiEvidencePack) -> str:
+    """按同一规则序列化预算检查、Prompt和缓存使用的证据包。
+
+    Args:
+        evidence_pack: 已通过字段和内部一致性校验的候选或最终证据包。
+
+    Returns:
+        str: 键排序、紧凑且保留Unicode的JSON文本。
+            候选包仍须由构造函数检查UTF-8字节大小。
+    """
+    return json.dumps(
+        evidence_pack.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def redact_sensitive_text(value: str) -> str:
@@ -226,25 +252,80 @@ def build_ai_failure_evidence(detail: CiFailureDetailResponse) -> AiFailureEvide
     )
 
 
+def build_ai_historical_failure_evidence(
+    history: HistoricalFailureResponse,
+) -> AiHistoricalFailureEvidence:
+    """把已核对的历史失败转换成有限、脱敏的AI证据。
+
+    Args:
+        history: 检索服务已回查PostgreSQL并核对来源的历史失败。
+
+    Returns:
+        AiHistoricalFailureEvidence: 经过现有脱敏和单条截断处理，
+            并携带历史编号、运行来源和相似分数的证据。
+
+    Raises:
+        ValidationError: 转换后的字段不符合AI证据契约。
+    """
+
+    # 复用现有错误文本处理，不另写一套脱敏和截断规则。
+    failure = build_ai_failure_evidence(history.failure)
+
+    return AiHistoricalFailureEvidence.model_validate(
+        {
+            # **:就是把字典里的键值对全部展开，放进新字典
+            **failure.model_dump(),
+            # 覆盖原来的failure编号，明确指向历史事件及错误位置。
+            "evidence_id": (
+                f"history:{history.event_id}:"
+                f"{failure.testcase_index}:{failure.issue_index}"
+            ),
+            "event_id": history.event_id,
+            "repository_full_name": history.repository_full_name,
+            "run_id": history.run_id,
+            "run_attempt": history.run_attempt,
+            "job_key": history.job_key,
+            "similarity_score": history.similarity_score,
+        }
+    )
+
+
 def _create_ai_evidence_pack(
     event: CiFailureQueryResponse,
     failures: list[AiFailureEvidence],
+    *,
+    history: list[AiHistoricalFailureEvidence] | None = None,
+    total_history_count: int = 0,
+    retrieval_status: Literal["available", "degraded", "disabled"] = "disabled",
+    embedding_model: str | None = None,
 ) -> AiEvidencePack:
-    """使用已经通过单条处理的失败证据创建候选证据包。
+    """组装等待接受总字节检查的候选证据包。
 
     Args:
         event: 已由查询响应模型校验的 CI 事件和全部结构化失败明细。
         failures: 已完成脱敏和字段限长、准备接受总字节检查的证据。
+        history: 已完成单条转换、暂时选入的历史证据。
+        total_history_count: 本次检索提供的历史数量，不是数据库历史总量。
+        retrieval_status: 本次检索正常、降级或明确关闭的状态。
+        embedding_model: 启用检索时配置的向量模型名称。
 
     Returns:
-        AiEvidencePack: 计数和截断语义与当前候选证据一致的证据包。
+        AiEvidencePack: 计数、截断标记和检索上下文一致的候选包。
+
+    Raises:
+        ValidationError: 证据或检索上下文不符合整包契约。
     """
 
+    selected_history = history if history is not None else []
     total_failure_count = len(event.failures)
 
     # 少选了失败节点，或者任一文本字段被截断，都表示模型没有看到完整证据。
     truncated = len(failures) < total_failure_count or any(
         failure.content_truncated for failure in failures
+    )
+    # 即使历史一条都没放下，也要声明本次检索提供的内容被省略了。
+    history_truncated = len(selected_history) < total_history_count or any(
+        item.content_truncated for item in selected_history
     )
 
     return AiEvidencePack(
@@ -261,26 +342,39 @@ def _create_ai_evidence_pack(
         included_failure_count=len(failures),
         truncated=truncated,
         failures=failures,
+        history=selected_history,
+        history_truncated=history_truncated,
+        retrieval_status=retrieval_status,
+        embedding_model=embedding_model,
     )
 
 
 def build_ai_evidence_pack(
     event: CiFailureQueryResponse,
+    *,
+    history: list[HistoricalFailureResponse] | None = None,
+    retrieval_status: Literal["available", "degraded", "disabled"] = "disabled",
+    embedding_model: str | None = None,
 ) -> AiEvidencePack:
     """为一次已解析 CI 事件构造有限、脱敏的完整模型证据包。
 
     Args:
         event: 查询服务返回的 CI 事件。调用前已通过响应模型校验，
             但可能仍处于 pending、failed 或合法零失败状态。
+        history: 检索服务已核对、按相似分数排序的历史；省略时为空。
+        retrieval_status: 检索正常、降级或关闭；旧调用默认关闭。
+        embedding_model: 启用或降级时记录配置中的向量模型名称。
 
     Returns:
-        AiEvidencePack: 按 XML 位置稳定排序，最多包含 20 条失败，
-            且最终 JSON UTF-8 大小不超过 32 KiB 的模型证据包。
+        AiEvidencePack: 当前最多20条、历史最多5条；当前优先，
+            两者及检索上下文合计的最终JSON UTF-8不超过32KiB。
 
     Raises:
         AiEvidenceNotReadyError: 事件尚未成功解析。
         AiEvidenceEmptyError: 事件解析成功但没有 failure/error。
         AiEvidencePackTooLargeError: 第一条有限证据仍超过整包字节上限。
+        ValueError: 未正常完成检索却提供了历史内容。
+        ValidationError: 检索上下文或历史来源不符合证据契约。
     """
 
     if event.parse_status != "parsed":
@@ -291,6 +385,10 @@ def build_ai_evidence_pack(
 
     if not event.failures:
         raise AiEvidenceEmptyError(event.event_id)
+
+    history_items = history if history is not None else []
+    if retrieval_status != "available" and history_items:
+        raise ValueError("检索未正常完成时不能提供历史证据")
 
     # 即使调用方未来改变数据库查询，也始终按原 XML 位置稳定选择前 20 条。
     ordered_details = sorted(
@@ -319,8 +417,14 @@ def build_ai_evidence_pack(
         candidate_pack = _create_ai_evidence_pack(
             event,
             candidate_failures,
+            total_history_count=len(history_items),
+            retrieval_status=retrieval_status,
+            embedding_model=embedding_model,
         )
-        candidate_bytes = len(candidate_pack.model_dump_json().encode("utf-8"))
+        # 元数据从第一条当前证据起就计入；与Prompt和缓存使用同一JSON。
+        candidate_bytes = len(
+            serialize_ai_evidence_pack(candidate_pack).encode("utf-8")
+        )
 
         if candidate_bytes > MAX_EVIDENCE_PACK_BYTES:
             if accepted_pack is None:
@@ -341,5 +445,27 @@ def build_ai_evidence_pack(
             event_id=event.event_id,
             actual_bytes=0,
         )
+
+    # 当前证据选择结束后，再使用剩余预算接纳有序历史前缀。
+    included_history: list[AiHistoricalFailureEvidence] = []
+    for item in history_items[:MAX_HISTORY_PER_EVIDENCE_PACK]:
+        new_history = build_ai_historical_failure_evidence(item)
+        candidate_history = [*included_history, new_history]
+        candidate_pack = _create_ai_evidence_pack(
+            event,
+            included_failures,
+            history=candidate_history,
+            total_history_count=len(history_items),
+            retrieval_status=retrieval_status,
+            embedding_model=embedding_model,
+        )
+        candidate_bytes = len(
+            serialize_ai_evidence_pack(candidate_pack).encode("utf-8")
+        )
+        if candidate_bytes > MAX_EVIDENCE_PACK_BYTES:
+            # 保留此前通过检查的包，不删除当前失败来腾出历史空间。
+            break
+        included_history = candidate_history
+        accepted_pack = candidate_pack
 
     return accepted_pack

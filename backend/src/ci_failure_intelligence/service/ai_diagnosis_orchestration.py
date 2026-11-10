@@ -36,9 +36,9 @@ from ci_failure_intelligence.service.ci_failure_query import (
 )
 
 # 修改诊断规则时递增，避免复用旧 Prompt 产生的结果。
-AI_DIAGNOSIS_PROMPT_VERSION = "v1"
+AI_DIAGNOSIS_PROMPT_VERSION = "v2"
 # 修改 AiDiagnosis 的业务字段含义时递增。
-AI_DIAGNOSIS_OUTPUT_SCHEMA_VERSION = "v1"
+AI_DIAGNOSIS_OUTPUT_SCHEMA_VERSION = "v2"
 
 
 def build_ai_diagnosis_cache_identity(

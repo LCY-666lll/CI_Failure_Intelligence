@@ -18,6 +18,7 @@ from ci_failure_intelligence.schemas.ai_evidence import AiEvidencePack
 from ci_failure_intelligence.service.ai_diagnosis_validation import (
     validate_ai_diagnosis_evidence,
 )
+from ci_failure_intelligence.service.ai_evidence import serialize_ai_evidence_pack
 
 SYSTEM_INSTRUCTIONS = """\
 角色:
@@ -35,28 +36,14 @@ SYSTEM_INSTRUCTIONS = """\
 7. recommended_actions 必须是开发者可以安全执行的排查动作。
 8. 只输出符合给定 JSON Schema 的 JSON 对象，不要输出 Markdown 代码块或额外说明。
 9. 所有面向开发者的自然语言字段使用简体中文。
+10. failures 是当前事件证据，history 是历史事件证据。
+    历史只能使用 history 中实际提供的 evidence_id，不能自行补充历史记录。
+11. retrieval_status 为 degraded 或 disabled 时，只能根据当前证据诊断；
+    available 且 history 为空，只表示本次检索没有提供符合条件的历史。
+12. history_truncated 为 true 时，不得声称已经分析未提供的历史内容。
+13. similarity_score 只表示检索相似程度，不代表根因相同或诊断置信度。
+    历史没有提供修复记录时，不得编造“过去已经验证有效”的修复方案。
 """
-
-
-def serialize_ai_evidence_pack(
-    evidence_pack: AiEvidencePack,
-) -> str:
-    """按稳定规则序列化实际发送给模型的 Evidence Pack。
-
-    Args:
-        evidence_pack: 已完成状态、脱敏、数量和字节限制的证据包。
-
-    Returns:
-        str: 键排序、紧凑且保留 Unicode 的稳定 JSON 文本。
-            该文本同时用于 Prompt 和 evidence SHA-256 计算。
-    """
-
-    return json.dumps(
-        evidence_pack.model_dump(mode="json"),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
 
 
 @dataclass(frozen=True, slots=True)

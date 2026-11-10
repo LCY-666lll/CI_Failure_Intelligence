@@ -67,7 +67,11 @@ EvidenceId = Annotated[
     str,
     StringConstraints(
         strict=True,
-        pattern=r"^failure:[0-9]+:[0-9]+$",
+        # 当前证据与历史证据使用不同编号，避免来源混淆。
+        pattern=(
+            r"^(?:failure:[0-9]+:[0-9]+"
+            r"|history:[1-9][0-9]*:[0-9]+:[0-9]+)$"
+        ),
     ),
 ]
 

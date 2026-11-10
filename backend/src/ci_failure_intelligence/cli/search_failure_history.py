@@ -168,9 +168,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     result = {
         "event_id": arguments.event_id,
-        # 将datetime和嵌套响应转换成JSON可表示的数据。
+        # model_dump(mode="json")：Pydantic 模型转换为 JSON 兼容的 Python 数据
         "history": [item.model_dump(mode="json") for item in history],
     }
+    # json.dumps()：将 Python 字典、列表等数据真正序列化成 JSON 字符串
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
