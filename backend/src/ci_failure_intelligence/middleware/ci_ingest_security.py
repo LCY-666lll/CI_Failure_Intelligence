@@ -4,18 +4,18 @@ import hashlib
 import hmac
 import re
 import time
-from dataclasses import dataclass
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from starlette import status
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
 from ci_failure_intelligence.security.nonce_store import (
     NonceClaimResult,
     NonceStore,
     NonceStoreUnavailableError,
 )
-
 
 # 只有这个方法和路径组成的请求需要执行 CI 接入安全检查。
 CI_INGEST_METHOD = "POST"

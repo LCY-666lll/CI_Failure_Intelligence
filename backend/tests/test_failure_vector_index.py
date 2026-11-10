@@ -123,6 +123,8 @@ def test_write_batches_bind_vectors_to_their_actual_source_and_text() -> None:
                 == hashlib.sha256(text.encode("utf-8")).hexdigest()
             )
             assert "details" not in point.payload
+            # 本项目写入稠密向量列表，先确认具体类型再检查维度。
+            assert isinstance(point.vector, list)
             assert len(point.vector) == 384
 
 

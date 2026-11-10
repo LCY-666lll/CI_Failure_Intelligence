@@ -1,6 +1,7 @@
 """定义 CI 接入防重放流程依赖的 nonce 存储契约。"""
 
 from enum import Enum
+
 # 用来定义:一个对象要有哪些方法，才算符合这个接口
 from typing import Protocol
 

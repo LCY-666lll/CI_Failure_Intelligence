@@ -11,7 +11,6 @@ from ci_failure_intelligence.security.nonce_store import (
     NonceStoreUnavailableError,
 )
 
-
 # 与 Compose 中 cfi_ingest 用户被授权的 ACL 键前缀保持一致。
 NONCE_KEY_PREFIX = "cfi:nonce:"
 

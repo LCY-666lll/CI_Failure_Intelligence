@@ -5,14 +5,6 @@ import hashlib
 import hmac
 from collections.abc import Callable
 
-from httpx2 import Client
-from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.responses import JSONResponse
-from starlette.routing import Route
-from starlette.testclient import TestClient
-from starlette.types import Message, Receive, Scope, Send
-
 from ci_failure_intelligence.middleware.ci_ingest_security import (
     BODY_TOO_LARGE_DETAIL,
     CI_INGEST_NONCE_HEADER,
@@ -28,7 +20,13 @@ from ci_failure_intelligence.security.nonce_store import (
     NonceStore,
     NonceStoreUnavailableError,
 )
-
+from httpx2 import Client
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+from starlette.testclient import TestClient
+from starlette.types import Message, Receive, Scope, Send
 
 TEST_SECRET = b"test-only-secret-with-at-least-32-bytes"
 FIXED_CURRENT_TIME_SECONDS = 1_792_100_000

@@ -13,14 +13,12 @@ from ci_failure_intelligence.schemas.ci_failure_query import (
     CiFailureQueryResponse,
 )
 from ci_failure_intelligence.service.failure_index import (
+    FAILURE_VECTOR_INDEX_VERSION,
     build_failure_index_text,
 )
 
 # 固定编号规则；相同事件和 XML 位置生成相同 Point ID。
 FAILURE_POINT_NAMESPACE = UUID("be803724-c3df-52f2-8f99-2b118b1a1fbd")
-
-# 当前模型和文本整理规则对应的索引版本。
-FAILURE_VECTOR_INDEX_VERSION = "v1"
 
 # 控制一次向 Qdrant 写入的 Point 数量。
 VECTOR_WRITE_BATCH_SIZE = 32

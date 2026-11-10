@@ -4,10 +4,9 @@ import asyncio
 from collections.abc import Callable
 from typing import Any, cast
 
-from sqlalchemy.ext.asyncio import AsyncEngine
-
 from ci_failure_intelligence.core.config import Settings
 from ci_failure_intelligence.infrastructure import database
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 
 def test_database_url_uses_psycopg_and_hides_password(

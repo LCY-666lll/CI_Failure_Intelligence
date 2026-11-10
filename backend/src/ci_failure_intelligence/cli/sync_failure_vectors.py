@@ -7,7 +7,6 @@ from collections.abc import Sequence
 
 from pydantic import ValidationError
 from qdrant_client.http.exceptions import ApiException
-from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from ci_failure_intelligence.core.config import (
@@ -21,16 +20,13 @@ from ci_failure_intelligence.infrastructure.database import (
     create_database_engine,
     create_database_session_factory,
 )
-from ci_failure_intelligence.infrastructure.persistence.models.ci_failure_event import (
-    CiFailureEventModel,
-)
 from ci_failure_intelligence.infrastructure.qdrant_client import (
     create_qdrant_client,
 )
 from ci_failure_intelligence.service.ci_failure_query import (
     CiFailureQueryNotFoundError,
     CiFailureQueryUnavailableError,
-    get_ci_failure_details,
+    get_ci_failure_context,
 )
 from ci_failure_intelligence.service.failure_vector_index import (
     index_ci_failure_event,
@@ -67,17 +63,10 @@ async def _run_event_index(
         session_factory = create_database_session_factory(engine)
 
         async with session_factory() as session:
-            # 复用已有查询服务，不复制事件和明细查询逻辑。
-            event = await get_ci_failure_details(session, event_id)
-
-            # 读取检索过滤和历史时间边界需要的内部来源信息。
-            metadata_result = await session.execute(
-                select(
-                    CiFailureEventModel.github_repository_id,
-                    CiFailureEventModel.received_at,
-                ).where(CiFailureEventModel.id == event_id)
+            # 写入和检索复用相同的事件及来源读取逻辑。
+            event, repository_id, received_at = await get_ci_failure_context(
+                session, event_id
             )
-            repository_id, received_at = metadata_result.one()
 
         # Session 已关闭，后续模型计算不占用这次数据库连接。
         if event.parse_status != "parsed":
@@ -124,6 +113,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         SystemExit: argparse 处理帮助请求或拒绝非法参数时退出。
     """
 
+    # parser ：一个专门负责检查 终端参数 的对象
     parser = argparse.ArgumentParser(
         description="将指定 CI 事件的失败明细写入 Qdrant",
     )
@@ -147,6 +137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         with asyncio.Runner(
             loop_factory=asyncio.SelectorEventLoop,
         ) as runner:
+            # 事件循环真正驱动方法执行
             written = runner.run(
                 _run_event_index(
                     arguments.event_id,

@@ -1,5 +1,7 @@
 """按事件 ID 读取 CI 失败状态和结构化失败证据。"""
 
+from datetime import datetime
+
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -114,3 +116,42 @@ async def get_ci_failure_details(
         raise CiFailureQueryUnavailableError(
             f"CI 失败详情暂时无法查询：event_id={event_id}"
         ) from error
+
+
+async def get_ci_failure_context(
+    session: AsyncSession,
+    event_id: int,
+) -> tuple[CiFailureQueryResponse, int, datetime]:
+    """读取索引和检索共用的当前事件来源。
+
+    Args:
+        session: 调用方创建并负责关闭的异步Session。
+        event_id: 已校验为正整数的数据库事件ID。
+
+    Returns:
+        tuple[CiFailureQueryResponse, int, datetime]:
+            依次为事件及明细、稳定仓库ID、带时区的接收时间。
+
+    Raises:
+        CiFailureQueryNotFoundError: 事件不存在或读取期间被删除。
+        CiFailureQueryUnavailableError: 数据库无法完成查询。
+    """
+
+    try:
+        # 复用已有详情查询，不再维护另一套明细读取逻辑。
+        event = await get_ci_failure_details(session, event_id)
+        metadata_result = await session.execute(
+            select(
+                CiFailureEventModel.github_repository_id,
+                CiFailureEventModel.received_at,
+            ).where(CiFailureEventModel.id == event_id)
+        )
+        metadata = metadata_result.one_or_none()
+
+        if metadata is None:
+            raise CiFailureQueryNotFoundError(event_id)
+
+        return event, metadata[0], metadata[1]
+
+    except SQLAlchemyError as error:
+        raise CiFailureQueryUnavailableError("CI事件来源信息暂时无法读取") from error

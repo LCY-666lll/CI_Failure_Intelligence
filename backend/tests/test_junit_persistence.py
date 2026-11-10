@@ -5,17 +5,16 @@ from types import TracebackType
 from typing import Any, cast
 
 import pytest
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql.dml import Delete, Insert, Update
-from sqlalchemy.sql.selectable import Select
-
 from ci_failure_intelligence.service.junit_persistence import (
     CiFailureEventNotFoundError,
     JunitPersistenceStatus,
     JunitPersistenceUnavailableError,
     process_junit_event,
 )
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.dml import Delete, Insert, Update
+from sqlalchemy.sql.selectable import Select
 
 
 class FakeTransaction:

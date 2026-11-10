@@ -1,9 +1,10 @@
 """将失败明细整理成稳定、有限且脱敏的检索文本。"""
 
-from ci_failure_intelligence.schemas.ci_failure_query import (
-    CiFailureDetailResponse
-)
+from ci_failure_intelligence.schemas.ci_failure_query import CiFailureDetailResponse
 from ci_failure_intelligence.service.ai_evidence import build_ai_failure_evidence
+
+# 写入和检索必须使用相同的索引规则版本。
+FAILURE_VECTOR_INDEX_VERSION = "v1"
 
 
 def build_failure_index_text(

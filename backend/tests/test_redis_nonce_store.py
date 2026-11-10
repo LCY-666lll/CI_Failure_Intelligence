@@ -5,15 +5,13 @@ from collections.abc import Iterable
 from typing import Any, cast
 
 import pytest
-from redis.asyncio import Redis
-from redis.exceptions import ConnectionError as RedisConnectionError
-
 from ci_failure_intelligence.infrastructure.redis_nonce_store import RedisNonceStore
 from ci_failure_intelligence.security.nonce_store import (
     NonceClaimResult,
     NonceStoreUnavailableError,
 )
-
+from redis.asyncio import Redis
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 TEST_NONCE = "123e4567-e89b-42d3-a456-426614174000"
 TEST_TTL_SECONDS = 660

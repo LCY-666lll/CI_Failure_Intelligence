@@ -3,9 +3,8 @@
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
-
 from ci_failure_intelligence.schemas.ci_ingest import CiFailureIngestRequest
+from pydantic import ValidationError
 
 
 def build_valid_payload() -> dict[str, Any]:

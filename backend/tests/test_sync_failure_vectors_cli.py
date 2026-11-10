@@ -74,12 +74,10 @@ def install_fake_runtime(monkeypatch, *, status="parsed", failures=1, failure=No
             session_state["open"] = False
             events.append("session_closed")
 
-        async def execute(self, statement):
-            return SimpleNamespace(one=lambda: (123, datetime(2026, 11, 9, tzinfo=UTC)))
-
-    async def read_details(session, event_id):
+    async def read_context(session, event_id):
         assert event_id == 13
-        return event
+        assert session_state["open"]
+        return event, 123, datetime(2026, 11, 9, tzinfo=UTC)
 
     def load_model(settings):
         assert not session_state["open"]
@@ -106,7 +104,7 @@ def install_fake_runtime(monkeypatch, *, status="parsed", failures=1, failure=No
         cli, "create_database_engine", lambda settings: SimpleNamespace(dispose=dispose)
     )
     monkeypatch.setattr(cli, "create_database_session_factory", lambda engine: Session)
-    monkeypatch.setattr(cli, "get_ci_failure_details", read_details)
+    monkeypatch.setattr(cli, "get_ci_failure_context", read_context)
     monkeypatch.setattr(cli, "create_embedding_model", load_model)
     monkeypatch.setattr(
         cli, "create_qdrant_client", lambda settings: SimpleNamespace(close=close)

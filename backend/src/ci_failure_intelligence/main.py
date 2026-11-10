@@ -3,7 +3,6 @@
 from ci_failure_intelligence.application import create_app
 from ci_failure_intelligence.core.config import Settings
 
-
 # Settings负责从环境变量和项目根目录.env读取真实运行配置。
 # 配置缺失或非法时，这一行会直接终止应用启动。
 # BaseSettings会从环境来源补齐必填字段，

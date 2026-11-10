@@ -1,0 +1,23 @@
+{
+    "include": [
+        "backend/src",
+        "backend/tests",
+        "backend/migrations",
+        "scripts"
+    ],
+    "exclude": [
+        "backend/.venv",
+        "reports",
+        "data",
+        "frontend"
+    ],
+    "ignore": [
+        "reports"
+    ],
+    "extraPaths": [
+        "backend/src"
+    ],
+    "pythonVersion": "3.12",
+    "venvPath": "backend",
+    "venv": ".venv"
+}
