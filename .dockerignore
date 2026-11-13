@@ -31,3 +31,6 @@ backend/tests/
 **/dist/
 **/node_modules/
 .playwright-cli/
+
+# 模型缓存通过运行时挂载提供，不发送到镜像构建上下文。
+data/local/

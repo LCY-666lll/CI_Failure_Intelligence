@@ -22,6 +22,22 @@ services:
       CFI_POSTGRES_PORT: "5432"
       CFI_REDIS_HOST: redis
       CFI_REDIS_PORT: "6379"
+      # 后端容器通过 Compose 服务名访问 Qdrant。
+      CFI_QDRANT_URL: "http://qdrant:6333"
+      # 对应下面只读挂载的容器内模型缓存目录。
+      CFI_EMBEDDING_CACHE_DIR: "/app/data/local/embedding-models"
+      # 复用后端进程的模型，每轮完成后等待5分钟再继续解析和索引。
+      CFI_CI_PROCESSING_ENABLED: "true"
+
+    volumes:
+      # 直接读取准备好的完整模型缓存，不把模型复制进镜像。
+      - type: bind
+        source: ./data/local/embedding-models
+        target: /app/data/local/embedding-models
+        read_only: true
+        bind:
+          # 缓存目录遗漏时明确失败，避免自动创建空目录。
+          create_host_path: false
 
     ports:
       # 保留现有Windows后端的8001，新容器通过8002访问。
@@ -34,6 +50,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # 只要求启动；运行期不可用仍由检索节点处理降级。
+      qdrant:
+        condition: service_started
 
     healthcheck:
       # 在后端容器内部发起HTTP请求，不依赖额外安装curl。
@@ -47,8 +66,8 @@ services:
       start_period: 10s
       retries: 3
 
-    # 当前后端的初始上限，加入FastEmbed后依据实测调整。
-    mem_limit: 768m
+    # 加载本地模型后，依据已有 Linux 资源测试提高后端内存上限。
+    mem_limit: 1g
 
     # 给Uvicorn时间结束请求并释放数据库、Redis客户端。
     stop_grace_period: 30s

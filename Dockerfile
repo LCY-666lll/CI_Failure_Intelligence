@@ -18,10 +18,12 @@ WORKDIR /app
 # .dockerignore会排除Windows虚拟环境、测试和缓存。
 COPY backend/ /app/backend/
 
-# 使用镜像内的Python，按现有锁文件安装生产依赖和项目。
-RUN uv sync --project backend --locked --no-dev --no-editable \
-    --python /usr/local/bin/python \
-    && uv cache clean
+# 构建缓存不进入运行镜像，避免源码修改后重复下载相同依赖。
+# 降低下载并发并延长读取超时，减少不稳定网络下大包下载的重试。
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_CONCURRENT_DOWNLOADS=4 UV_HTTP_TIMEOUT=120 \
+    uv sync --project backend --locked --no-dev --no-editable \
+    --python /usr/local/bin/python
 
 # 让python、uvicorn和alembic优先使用项目虚拟环境。
 ENV PATH="/app/backend/.venv/bin:$PATH"
