@@ -1,8 +1,8 @@
 """提供 CI 事件列表、解析状态和结构化失败证据的只读接口。"""
 
-from typing import Annotated
+from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ci_failure_intelligence.api.dependencies import (
@@ -22,6 +22,15 @@ from ci_failure_intelligence.service.ci_run_list import (
     DEFAULT_CI_RUN_LIST_LIMIT,
     MAXIMUM_CI_RUN_LIST_LIMIT,
     list_recent_ci_runs,
+)
+from ci_failure_intelligence.schemas.failure_history import (
+    CiFailureHistoryResponse,
+)
+from ci_failure_intelligence.service.ai_diagnosis_orchestration import (
+    AiDiagnosisGraphContext,
+)
+from ci_failure_intelligence.service.ci_failure_history_query import (
+    get_ci_failure_history,
 )
 
 router = APIRouter(
@@ -93,4 +102,43 @@ async def read_ci_failure_details(
     return await get_ci_failure_details(
         session,
         event_id,
+    )
+
+@router.get(
+    "/{event_id}/history",
+    response_model=CiFailureHistoryResponse,
+    dependencies=[Depends(require_failure_read_token)],
+)
+async def read_ci_failure_history(
+    event_id: Annotated[int, Path(gt=0)],
+    request: Request,
+) -> CiFailureHistoryResponse:
+    """返回指定 CI 事件的历史检索状态及核实后的历史错误。
+
+    Args:
+        event_id: 已由 FastAPI 校验为正整数的当前事件主键。
+        request: 当前请求，用于取得应用启动时准备好的共享资源。
+
+    Returns:
+        CiFailureHistoryResponse: 当前解析状态、检索状态、
+            检索范围是否截断，以及最多五条历史错误。
+
+    Raises:
+        CiFailureQueryNotFoundError: 当前事件不存在。
+        CiFailureQueryUnavailableError: 当前事件或来源信息无法读取。
+        ValueError: 检索输入、向量或历史来源数据不符合约束。
+    """
+    # 只读取应用启动时一次性组装的上下文，不重新创建任何资源。
+    context = cast(
+        AiDiagnosisGraphContext,
+        request.app.state.ai_diagnosis_context,
+    )
+
+    return await get_ci_failure_history(
+        event_id=event_id,
+        session_factory=context.session_factory,
+        embedding_semaphore=context.embedding_semaphore,
+        retrieval_settings=context.retrieval_settings,
+        qdrant_client=context.qdrant_client,
+        embedding_model=context.embedding_model,
     )

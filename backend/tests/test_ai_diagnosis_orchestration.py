@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 from datetime import UTC, datetime, timedelta
-from types import TracebackType
+from types import SimpleNamespace, TracebackType
 from typing import cast
 from uuid import UUID
 
@@ -258,6 +258,16 @@ def as_chat_deepseek() -> ChatDeepSeek:
     return cast(ChatDeepSeek, object())
 
 
+def build_graph_context(factory: TrackingSessionFactory):
+    """为正式图复用已有假资源，不再调用旧编排签名。"""
+    return orchestration.AiDiagnosisGraphContext(
+        session_factory=as_session_factory(factory),
+        client=as_chat_deepseek(),
+        settings=build_settings(),
+        embedding_semaphore=asyncio.Semaphore(1),
+    )
+
+
 def test_cached_diagnosis_skips_provider_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -270,7 +280,7 @@ def test_cached_diagnosis_skips_provider_call(
     async def fake_query(*, session: AsyncSession, event_id: int):
         assert factory.active_sessions == 1
         assert event_id == 42
-        return build_query_response()
+        return build_query_response(), 123456, datetime(2026, 11, 12, tzinfo=UTC)
 
     async def fake_claim(**_: object) -> AiDiagnosisClaimResult:
         return AiDiagnosisClaimResult(
@@ -287,15 +297,14 @@ def test_cached_diagnosis_skips_provider_call(
         provider_called = True
         raise AssertionError("缓存命中时不得调用模型")
 
-    monkeypatch.setattr(orchestration, "get_ci_failure_details", fake_query)
+    monkeypatch.setattr(orchestration, "get_ci_failure_context", fake_query)
     monkeypatch.setattr(orchestration, "claim_ai_diagnosis", fake_claim)
     monkeypatch.setattr(orchestration, "generate_ai_diagnosis", fake_generate)
 
     result = asyncio.run(
         orchestrate_ai_diagnosis(
-            as_session_factory(factory),
-            as_chat_deepseek(),
-            build_settings(),
+            graph=orchestration.build_ai_diagnosis_graph(),
+            context=build_graph_context(factory),
             event_id=42,
         )
     )
@@ -316,8 +325,8 @@ def test_in_progress_returns_without_provider_call(
     factory = TrackingSessionFactory()
     lease_expires_at = datetime.now(UTC) + timedelta(seconds=120)
 
-    async def fake_query(**_: object) -> CiFailureQueryResponse:
-        return build_query_response()
+    async def fake_query(**_: object) -> tuple[CiFailureQueryResponse, int, datetime]:
+        return build_query_response(), 123456, datetime(2026, 11, 12, tzinfo=UTC)
 
     async def fake_claim(**_: object) -> AiDiagnosisClaimResult:
         return AiDiagnosisClaimResult(
@@ -330,15 +339,14 @@ def test_in_progress_returns_without_provider_call(
     async def forbidden_generate(**_: object) -> AiDiagnosisGenerationResult:
         raise AssertionError("处理中状态不得调用模型")
 
-    monkeypatch.setattr(orchestration, "get_ci_failure_details", fake_query)
+    monkeypatch.setattr(orchestration, "get_ci_failure_context", fake_query)
     monkeypatch.setattr(orchestration, "claim_ai_diagnosis", fake_claim)
     monkeypatch.setattr(orchestration, "generate_ai_diagnosis", forbidden_generate)
 
     result = asyncio.run(
         orchestrate_ai_diagnosis(
-            as_session_factory(factory),
-            as_chat_deepseek(),
-            build_settings(),
+            graph=orchestration.build_ai_diagnosis_graph(),
+            context=build_graph_context(factory),
             event_id=42,
         )
     )
@@ -359,8 +367,8 @@ def test_claimed_task_calls_provider_without_open_database_session(
     lease_token = UUID("00000000-0000-4000-8000-000000000042")
     completed_tokens: list[UUID] = []
 
-    async def fake_query(**_: object) -> CiFailureQueryResponse:
-        return build_query_response()
+    async def fake_query(**_: object) -> tuple[CiFailureQueryResponse, int, datetime]:
+        return build_query_response(), 123456, datetime(2026, 11, 12, tzinfo=UTC)
 
     async def fake_claim(**_: object) -> AiDiagnosisClaimResult:
         return AiDiagnosisClaimResult(
@@ -396,16 +404,15 @@ def test_claimed_task_calls_provider_without_open_database_session(
             status=AiDiagnosisFinalStatus.COMPLETED,
         )
 
-    monkeypatch.setattr(orchestration, "get_ci_failure_details", fake_query)
+    monkeypatch.setattr(orchestration, "get_ci_failure_context", fake_query)
     monkeypatch.setattr(orchestration, "claim_ai_diagnosis", fake_claim)
     monkeypatch.setattr(orchestration, "generate_ai_diagnosis", fake_generate)
     monkeypatch.setattr(orchestration, "complete_ai_diagnosis", fake_complete)
 
     result = asyncio.run(
         orchestrate_ai_diagnosis(
-            as_session_factory(factory),
-            as_chat_deepseek(),
-            build_settings(),
+            graph=orchestration.build_ai_diagnosis_graph(),
+            context=build_graph_context(factory),
             event_id=42,
         )
     )
@@ -426,8 +433,8 @@ def test_provider_failure_is_persisted_with_current_lease(
     lease_token = UUID("00000000-0000-4000-8000-000000000043")
     persisted_failures: list[tuple[str, str]] = []
 
-    async def fake_query(**_: object) -> CiFailureQueryResponse:
-        return build_query_response()
+    async def fake_query(**_: object) -> tuple[CiFailureQueryResponse, int, datetime]:
+        return build_query_response(), 123456, datetime(2026, 11, 12, tzinfo=UTC)
 
     async def fake_claim(**_: object) -> AiDiagnosisClaimResult:
         return AiDiagnosisClaimResult(
@@ -435,6 +442,7 @@ def test_provider_failure_is_persisted_with_current_lease(
             status=AiDiagnosisClaimStatus.CLAIMED,
             attempt_count=1,
             lease_token=lease_token,
+            lease_expires_at=datetime.now(UTC) + timedelta(seconds=120),
         )
 
     async def fake_generate(**_: object) -> AiDiagnosisGenerationResult:
@@ -458,7 +466,7 @@ def test_provider_failure_is_persisted_with_current_lease(
             status=AiDiagnosisFinalStatus.FAILED,
         )
 
-    monkeypatch.setattr(orchestration, "get_ci_failure_details", fake_query)
+    monkeypatch.setattr(orchestration, "get_ci_failure_context", fake_query)
     monkeypatch.setattr(orchestration, "claim_ai_diagnosis", fake_claim)
     monkeypatch.setattr(orchestration, "generate_ai_diagnosis", fake_generate)
     monkeypatch.setattr(orchestration, "fail_ai_diagnosis", fake_fail)
@@ -466,9 +474,8 @@ def test_provider_failure_is_persisted_with_current_lease(
     with pytest.raises(AiDiagnosisProviderError):
         asyncio.run(
             orchestrate_ai_diagnosis(
-                as_session_factory(factory),
-                as_chat_deepseek(),
-                build_settings(),
+                graph=orchestration.build_ai_diagnosis_graph(),
+                context=build_graph_context(factory),
                 event_id=42,
             )
         )
@@ -478,3 +485,51 @@ def test_provider_failure_is_persisted_with_current_lease(
     ]
     assert factory.call_count == 3
     assert factory.active_sessions == 0
+
+
+@pytest.mark.parametrize("event_id", [0, -1, True])
+def test_graph_entry_rejects_invalid_id_before_running_graph(event_id):
+    """内部调用也不能以非法ID启动图或产生模型费用。"""
+    from unittest.mock import AsyncMock
+
+    invoke = AsyncMock()
+    graph = cast(orchestration.AiDiagnosisGraph, SimpleNamespace(ainvoke=invoke))
+    with pytest.raises(ValueError):
+        asyncio.run(
+            orchestrate_ai_diagnosis(
+                graph=graph,
+                context=build_graph_context(TrackingSessionFactory()),
+                event_id=event_id,
+            )
+        )
+    invoke.assert_not_awaited()
+
+
+@pytest.mark.parametrize("fault", ["missing", "wrong_type", "wrong_event"])
+def test_graph_entry_rejects_invalid_public_result(fault):
+    """入口不能把缺失、类型错误或其他事件的结果交给HTTP层。"""
+    from unittest.mock import AsyncMock
+
+    if fault == "missing":
+        output = {}
+    elif fault == "wrong_type":
+        output = {"result": "invalid"}
+    else:
+        output = {
+            "result": orchestration.AiDiagnosisOrchestrationResult(
+                event_id=99,
+                status=AiDiagnosisOrchestrationStatus.CACHED,
+                attempt_count=1,
+            )
+        }
+    invoke = AsyncMock(return_value=output)
+    graph = cast(orchestration.AiDiagnosisGraph, SimpleNamespace(ainvoke=invoke))
+    with pytest.raises(orchestration.AiDiagnosisPersistenceUnavailableError):
+        asyncio.run(
+            orchestrate_ai_diagnosis(
+                graph=graph,
+                context=build_graph_context(TrackingSessionFactory()),
+                event_id=42,
+            )
+        )
+    invoke.assert_awaited_once()

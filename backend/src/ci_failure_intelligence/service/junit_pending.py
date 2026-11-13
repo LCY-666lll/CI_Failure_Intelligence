@@ -27,11 +27,14 @@ MAX_PENDING_BATCH_LIMIT = 100
 
 @dataclass(frozen=True, slots=True)
 class JunitPendingBatchResult:
-    """保存一次 pending 批处理已经提交的统计结果。"""
+    """保存一次 pending 批处理已经提交的统计和成功事件。"""
 
     selected_count: int
     parsed_count: int
     failed_count: int
+
+    # 仅包含本批已成功提交解析结果的事件，供后续索引使用。
+    parsed_event_ids: tuple[int, ...] = ()
 
 
 async def _list_pending_event_ids(
@@ -103,6 +106,7 @@ async def process_pending_junit_batch(
 
     parsed_count = 0
     failed_count = 0
+    parsed_event_ids: list[int] = []
 
     for event_id in event_ids:
         # 每个事件调用一次工厂，获得相互独立的 Session。
@@ -113,10 +117,13 @@ async def process_pending_junit_batch(
             )
         if result.status is JunitPersistenceStatus.PARSED:
             parsed_count += 1
+            # process_junit_event 已完成提交，才把事件交给后续索引。
+            parsed_event_ids.append(event_id)
         else:
             failed_count += 1
     return JunitPendingBatchResult(
         selected_count=len(event_ids),
         parsed_count=parsed_count,
         failed_count=failed_count,
+        parsed_event_ids=tuple(parsed_event_ids),
     )

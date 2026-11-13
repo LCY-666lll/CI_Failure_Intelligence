@@ -10,20 +10,20 @@ from fastapi import (
     Response,
     status,
 )
-from langchain_deepseek import ChatDeepSeek
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ci_failure_intelligence.api.dependencies import (
     get_database_session,
     require_ai_diagnosis_trigger_token,
     require_failure_read_token,
 )
-from ci_failure_intelligence.core.config import Settings
 from ci_failure_intelligence.schemas.ai_diagnosis_api import (
     AiDiagnosisReadResponse,
     AiDiagnosisResponse,
 )
 from ci_failure_intelligence.service.ai_diagnosis_orchestration import (
+    AiDiagnosisGraph,
+    AiDiagnosisGraphContext,
     AiDiagnosisOrchestrationStatus,
     orchestrate_ai_diagnosis,
 )
@@ -58,7 +58,7 @@ async def diagnose_ci_failure(
 
     Args:
         event_id: 准备诊断的 CI 失败事件主键。
-        request: 当前请求，用于取得应用共享配置和基础设施对象。
+        request: 当前请求，用于取得应用共享图和运行上下文。
         response: FastAPI 响应对象，用于动态设置 202 状态码。
 
     Returns:
@@ -75,25 +75,19 @@ async def diagnose_ci_failure(
         AiDiagnosisLeaseLostError: 当前执行者已经失去写回权限。
     """
 
-    # 应用工厂保存的是完整 Settings，其中包含 DeepSeek 运行配置。
-    settings = cast(Settings, request.app.state.settings)
-
-    # 编排服务需要创建三段相互独立的 Session，
-    # 因此传入 Session 工厂，而不是单个请求 Session。
-    session_factory = cast(
-        async_sessionmaker[AsyncSession],
-        request.app.state.database_session_factory,
+    # 图已由应用工厂编译；Context已装入同一应用的共享资源。
+    graph = cast(
+        AiDiagnosisGraph,
+        request.app.state.ai_diagnosis_graph,
     )
-    # 整个 FastAPI 进程共享一个配置完成的模型客户端。
-    deepseek_client = cast(
-        ChatDeepSeek,
-        request.app.state.deepseek_client,
+    context = cast(
+        AiDiagnosisGraphContext,
+        request.app.state.ai_diagnosis_context,
     )
 
     result = await orchestrate_ai_diagnosis(
-        session_factory=session_factory,
-        client=deepseek_client,
-        settings=settings,
+        graph=graph,
+        context=context,
         event_id=event_id,
     )
 
@@ -113,14 +107,15 @@ async def diagnose_ci_failure(
         lease_expires_at=result.lease_expires_at,
     )
 
+
 @router.get(
     "/{event_id}/diagnosis",
     response_model=AiDiagnosisReadResponse,
-    dependencies=[Depends(require_failure_read_token)]
+    dependencies=[Depends(require_failure_read_token)],
 )
 async def read_ai_diagnosis(
-    event_id:Annotated[int,Path(gt=0)],
-    session:Annotated[AsyncSession,Depends(get_database_session)]
+    event_id: Annotated[int, Path(gt=0)],
+    session: Annotated[AsyncSession, Depends(get_database_session)],
 ) -> AiDiagnosisReadResponse:
     """读取指定事件当前保存的 AI 诊断状态。
 
@@ -138,7 +133,4 @@ async def read_ai_diagnosis(
             或已保存的诊断不符合当前响应契约。
     """
 
-    return await get_ai_diagnosis(
-        session=session,
-        event_id=event_id
-    )
+    return await get_ai_diagnosis(session=session, event_id=event_id)

@@ -275,6 +275,9 @@ class Settings(PostgresSettings, DeepSeekSettings):
     # 触发付费 AI 诊断使用独立令牌，不能与只读令牌复用。
     ai_diagnosis_trigger_token: SecretStr
 
+    # 默认关闭自动处理；Compose 显式开启，避免临时启动时修改已有数据。
+    ci_processing_enabled: bool = False
+
     # 这个属性是整数，没有提供时使用默认值，提供的值必须大于 0
     ingest_max_body_bytes: int = Field(
         default=DEFAULT_INGEST_MAX_BODY_BYTES,

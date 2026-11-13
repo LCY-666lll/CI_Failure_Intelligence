@@ -110,11 +110,14 @@ def test_completed_diagnosis_returns_structured_http_response(
     assert payload["total_tokens"] == 200
     assert payload["lease_expires_at"] is None
     assert received_arguments == {
-        "session_factory": app.state.database_session_factory,
-        "client": app.state.deepseek_client,
-        "settings": test_settings,
+        "graph": app.state.ai_diagnosis_graph,
+        "context": app.state.ai_diagnosis_context,
         "event_id": 42,
     }
+    context = app.state.ai_diagnosis_context
+    assert context.session_factory is app.state.database_session_factory
+    assert context.client is app.state.deepseek_client
+    assert context.settings is test_settings
 
 
 def test_in_progress_diagnosis_returns_202_without_result(

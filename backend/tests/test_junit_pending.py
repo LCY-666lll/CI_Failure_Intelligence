@@ -141,6 +141,7 @@ def test_pending_batch_processes_ids_in_order_and_counts_statuses(
         selected_count=3,
         parsed_count=2,
         failed_count=1,
+        parsed_event_ids=(4, 10),
     )
     assert processed_event_ids == [4, 8, 10]
 

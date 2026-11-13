@@ -33,6 +33,8 @@ def test_settings(test_hmac_secret: bytes) -> Settings:
     """创建与本地和生产密钥隔离的固定测试配置。"""
 
     return Settings(
+        # 测试不因本机或部署开关开启而自动处理真实数据。
+        ci_processing_enabled=False,
         ingest_hmac_secret=SecretStr(test_hmac_secret.decode("utf-8")),
         failure_read_token=SecretStr("test-only-failure-read-token-with-32-bytes"),
         ai_diagnosis_trigger_token=SecretStr(

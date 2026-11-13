@@ -1,27 +1,35 @@
 """根据运行配置创建 CI Failure Intelligence 应用。"""
 
+import asyncio
+
 # 给下面带 yield 的异步 lifespan() 写返回类型
 from collections.abc import AsyncGenerator
-
-# 把“yield 之前做启动工作、之后做关闭工作”的异步函数变成上下文管理器
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
+from functools import partial
 
 from fastapi import FastAPI
+from fastembed import TextEmbedding
 from langchain_deepseek import ChatDeepSeek
+from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ci_failure_intelligence.api.exception_handlers import (
     register_exception_handlers,
 )
 from ci_failure_intelligence.api.router import api_router
-from ci_failure_intelligence.core.config import Settings
+from ci_failure_intelligence.core.config import RetrievalSettings, Settings
 from ci_failure_intelligence.infrastructure.ai.deepseek_client import (
     create_deepseek_client,
+)
+from ci_failure_intelligence.infrastructure.ai.embedding_model import (
+    create_embedding_model,
+    run_embedding_in_thread,
 )
 from ci_failure_intelligence.infrastructure.database import (
     create_database_engine,
     create_database_session_factory,
 )
+from ci_failure_intelligence.infrastructure.qdrant_client import create_qdrant_client
 from ci_failure_intelligence.infrastructure.redis_client import (
     create_redis_client,
 )
@@ -32,6 +40,11 @@ from ci_failure_intelligence.middleware.ci_ingest_security import (
     CiIngestSecurityMiddleware,
 )
 from ci_failure_intelligence.security.nonce_store import NonceStore
+from ci_failure_intelligence.service.ai_diagnosis_orchestration import (
+    AiDiagnosisGraphContext,
+    build_ai_diagnosis_graph,
+)
+from ci_failure_intelligence.service.ci_processing import run_ci_processing
 
 
 def create_app(
@@ -42,6 +55,9 @@ def create_app(
     nonce_store: NonceStore | None = None,
     database_engine: AsyncEngine | None = None,
     deepseek_client: ChatDeepSeek | None = None,
+    retrieval_settings: RetrievalSettings | None = None,
+    qdrant_client: AsyncQdrantClient | None = None,
+    embedding_model: TextEmbedding | None = None,
 ) -> FastAPI:
     """使用已经校验的运行配置创建独立 FastAPI 应用。
 
@@ -57,10 +73,28 @@ def create_app(
         deepseek_client: 可选的 DeepSeek LangChain 客户端。
             未提供时根据 Settings 创建真实客户端对象；
             自动化测试可以注入假客户端，避免模型网络请求。
+        retrieval_settings: 可选的历史检索配置；未提供时不启用检索。
+        qdrant_client: 可选的已创建检索客户端，须同时提供检索配置；
+            注入对象由调用方负责关闭。
+        embedding_model: 可选的已加载模型，须同时提供检索配置；
+            未提供时在应用启动阶段从本地缓存加载。
 
     Returns:
         FastAPI: 已保存当前配置并完成路由注册的应用实例。
+
+    Raises:
+        ValueError: 注入检索资源或启用自动处理，但没有提供检索配置。
     """
+
+    # 防止注入资源却漏传配置，导致检索仍被标为 disabled。
+    if retrieval_settings is None and (
+        qdrant_client is not None or embedding_model is not None
+    ):
+        raise ValueError("注入检索资源时必须同时提供检索配置")
+
+    # 自动处理需要模型和向量库配置，不能带着缺失配置启动。
+    if settings.ci_processing_enabled and retrieval_settings is None:
+        raise ValueError("自动处理需要提供检索配置")
 
     managed_redis_client = None
 
@@ -98,36 +132,103 @@ def create_app(
     else:
         resolved_deepseek_client = deepseek_client
 
+    # 每个应用实例构图一次；请求只运行它，不重复登记节点和连接边。
+    ai_diagnosis_graph = build_ai_diagnosis_graph()
+
     # 进入 async with
     # → 执行到 yield
     # → FastAPI 开始服务
     # → 处理0到很多个请求
     # → 应用关闭
     # → 从 yield 后继续
-    # → finally 执行 aclose()
+    # → 清理共享资源
     @asynccontextmanager
-    async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
-        """在应用退出时释放由应用工厂创建的共享基础设施资源。
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+        """准备共享资源后一次性组装 Context，退出时清理自建资源。
+
+        Args:
+            app: FastAPI 传入的当前应用实例，接收就绪的共享 Context。
 
         Yields:
-            None: `yield` 期间 FastAPI 可以持续处理 HTTP 请求。
+            None: 共享资源准备完成，FastAPI 可以持续处理 HTTP 请求。
+
+        Raises:
+            ValueError: 启用检索时，本地模型缓存缺失或无法加载。
+            OSError: 本地模型文件读取或底层加载失败。
         """
+        # 登记清理函数，启动失败或正常退出时都按相反顺序等待执行。
+        async with AsyncExitStack() as resources:
+            if managed_redis_client is not None:
+                resources.push_async_callback(managed_redis_client.aclose)
+            if managed_database_engine is not None:
+                resources.push_async_callback(managed_database_engine.dispose)
 
-        try:
-            # 先暂停这个函数，把程序控制权交给 FastAPI；等 FastAPI 要关闭时，再回来继续执行。
-            # Redis 客户端采用按需连接，因此这里不执行强制 PING。
-            yield
+            resolved_qdrant_client = qdrant_client
+            resolved_embedding_model = embedding_model
 
-        # 尝试释放数据库 → 无论结果怎样 → 继续释放Redis
-        finally:
+            if retrieval_settings is not None:
+                if resolved_qdrant_client is None:
+                    resolved_qdrant_client = create_qdrant_client(retrieval_settings)
+                    # 只关闭应用创建的客户端，注入对象仍由调用方管理。
+                    resources.push_async_callback(resolved_qdrant_client.close)
+
+                if resolved_embedding_model is None:
+                    # 在线程中加载本地模型；完成前不会开始处理请求。
+                    # partial 把已校验配置绑定到无参数的加载调用。
+                    resolved_embedding_model = await run_embedding_in_thread(
+                        partial(create_embedding_model, retrieval_settings)
+                    )
+
+            # 所有资源准备完成后，一次性构造完整 Context 并交给路由复用。
+            ai_diagnosis_context = AiDiagnosisGraphContext(
+                session_factory=database_session_factory,
+                client=resolved_deepseek_client,
+                settings=settings,
+                # 同一应用的检索任务共用一个许可，不随请求重新创建。
+                embedding_semaphore=asyncio.Semaphore(1),
+                retrieval_settings=retrieval_settings,
+                qdrant_client=resolved_qdrant_client,
+                embedding_model=resolved_embedding_model,
+            )
+            app.state.ai_diagnosis_context = ai_diagnosis_context
+
             try:
-                if managed_database_engine is not None:
-                    await managed_database_engine.dispose()
+                # 后台任务随应用启停，退出时先等待它清理，再关闭共享资源。
+                # TaskGroup ：一组由同一个生命周期统一管理的异步任务。
+                async with asyncio.TaskGroup() as tasks:
+                    processing_task = None
+
+                    if settings.ci_processing_enabled:
+                        # 配置入口已校验，启用检索后资源应已准备完成。
+                        # 同时让类型检查器确认传入的对象不为 None。
+                        assert retrieval_settings is not None
+                        assert resolved_qdrant_client is not None
+                        assert resolved_embedding_model is not None
+
+                        processing_task = tasks.create_task(
+                            run_ci_processing(
+                                session_factory=database_session_factory,
+                                # 与 HTTP 检索共用同一许可，不再加载模型。
+                                embedding_semaphore=(
+                                    ai_diagnosis_context.embedding_semaphore
+                                ),
+                                retrieval_settings=retrieval_settings,
+                                qdrant_client=resolved_qdrant_client,
+                                embedding_model=resolved_embedding_model,
+                            ),
+                            name="ci-processing",
+                        )
+
+                    try:
+                        # 后台任务已安排运行，FastAPI 可以开始处理 HTTP 请求。
+                        yield
+                    finally:
+                        if processing_task is not None:
+                            # 发出取消请求，TaskGroup 等待任务清理完成。
+                            processing_task.cancel()
             finally:
-                # yield 之后属于应用关闭阶段。
-                # 只有真实运行路径创建了客户端，测试注入路径不会进入此分支。
-                if managed_redis_client is not None:
-                    await managed_redis_client.aclose()
+                # 后台任务退出后移除入口，外层随后释放自建客户端。
+                del app.state.ai_diagnosis_context
 
     # 每次调用都创建新的应用实例，因此不同测试可以使用不同配置。
     app = FastAPI(
@@ -164,6 +265,9 @@ def create_app(
 
     # AI 路由从当前应用实例取得共享客户端，不在每次请求中重复创建。
     app.state.deepseek_client = resolved_deepseek_client
+
+    # 图在应用创建时构建；完整 Context 在 lifespan 启动阶段组装。
+    app.state.ai_diagnosis_graph = ai_diagnosis_graph
 
     # 把已经汇总的健康检查和CI接入路由注册到当前应用实例。
     app.include_router(api_router)

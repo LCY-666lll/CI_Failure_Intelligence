@@ -93,6 +93,48 @@ def test_application_preserves_injected_deepseek_client(
     assert app.state.deepseek_client is injected_client
 
 
+def test_application_builds_one_graph_and_context_per_instance(
+    test_settings: Settings,
+    nonce_store: NonceStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """请求复用图和资源，不同应用的图、上下文及并发许可互相隔离。"""
+    original_builder = application_module.build_ai_diagnosis_graph
+    created_graphs = []
+
+    def build_graph():
+        graph = original_builder()
+        created_graphs.append(graph)
+        return graph
+
+    monkeypatch.setattr(application_module, "build_ai_diagnosis_graph", build_graph)
+    apps = [
+        application_module.create_app(settings=test_settings, nonce_store=nonce_store)
+        for _ in range(2)
+    ]
+    assert len(created_graphs) == 2
+    contexts = []
+    for index, app in enumerate(apps):
+        graph = app.state.ai_diagnosis_graph
+        assert graph is created_graphs[index]
+        assert not hasattr(app.state, "ai_diagnosis_context")
+        with TestClient(app) as client:
+            context = app.state.ai_diagnosis_context
+            contexts.append(context)
+            assert context.session_factory is app.state.database_session_factory
+            assert context.client is app.state.deepseek_client
+            assert context.settings is test_settings
+            assert context.retrieval_settings is None
+            assert client.get("/health/live").status_code == 200
+            assert client.get("/health/live").status_code == 200
+            assert app.state.ai_diagnosis_graph is graph
+            assert app.state.ai_diagnosis_context is context
+        assert not hasattr(app.state, "ai_diagnosis_context")
+    assert len(created_graphs) == 2
+    assert apps[0].state.ai_diagnosis_graph is not apps[1].state.ai_diagnosis_graph
+    assert contexts[0].embedding_semaphore is not contexts[1].embedding_semaphore
+
+
 def test_application_lifespan_closes_factory_created_redis_client(
     test_settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
