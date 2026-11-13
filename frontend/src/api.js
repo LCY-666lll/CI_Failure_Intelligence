@@ -49,5 +49,7 @@ export const getFailures = (id) =>
   request(`/api/v1/ci-runs/${id}/failures`, readToken.value);
 export const getDiagnosis = (id) =>
   request(`/api/v1/ci-runs/${id}/diagnosis`, readToken.value);
+export const getHistory = (id) =>
+  request(`/api/v1/ci-runs/${id}/history`, readToken.value);
 export const triggerDiagnosis = (id, token) =>
   request(`/api/v1/ci-runs/${id}/diagnosis`, token, { method: "POST" });

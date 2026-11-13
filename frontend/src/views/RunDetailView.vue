@@ -1,7 +1,9 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import { getDiagnosis, getFailures, triggerDiagnosis } from "../api";
+import HistoryPanel from "../components/HistoryPanel.vue";
+import { evidenceLocation } from "../evidence.js";
 
 const route = useRoute();
 const id = computed(() => Number(route.params.eventId));
@@ -10,6 +12,7 @@ const diagnosisState = ref(null);
 const loading = ref(true);
 const error = ref("");
 const diagnosisError = ref("");
+const evidenceNotice = ref("");
 const triggerOpen = ref(false);
 const triggerToken = ref("");
 const triggering = ref(false);
@@ -87,6 +90,8 @@ async function load() {
     const result = await getFailures(id.value);
     if (!active) return;
     run.value = result;
+    loading.value = false;
+    await focusEvidence();
     await loadDiagnosis();
     if (isProcessing.value) startPolling();
   } catch (cause) {
@@ -144,6 +149,40 @@ function evidenceId(failure) {
   return `failure:${failure.testcase_index}:${failure.issue_index}`;
 }
 
+async function focusEvidence(hash = route.hash) {
+  evidenceNotice.value = "";
+  if (!hash || loading.value || !run.value || !active) return;
+  let value;
+  try {
+    value = decodeURIComponent(hash.slice(1));
+  } catch {
+    value = "";
+  }
+  const location = evidenceLocation(value, id.value);
+  if (!location || !value.startsWith("failure:")) {
+    evidenceNotice.value = "这条证据引用格式无效，无法定位。";
+    return;
+  }
+  const targetId = location.to.hash.slice(1);
+  if (!run.value.failures.some((failure) => evidenceId(failure) === targetId)) {
+    evidenceNotice.value = "来源事件已打开，但这条失败证据当前不可用。";
+    return;
+  }
+  await nextTick();
+  if (!active) return;
+  const target = document.getElementById(targetId);
+  if (!target) return;
+  target.querySelector("details").open = true;
+  target.scrollIntoView({ block: "start" });
+  target.focus({ preventScroll: true });
+}
+
+function focusCurrentReference(value) {
+  const location = evidenceLocation(value, id.value);
+  if (location?.to.path === `/runs/${id.value}`)
+    void focusEvidence(location.to.hash);
+}
+
 function formatDate(value) {
   return value
     ? new Intl.DateTimeFormat("zh-CN", {
@@ -153,7 +192,12 @@ function formatDate(value) {
     : "—";
 }
 
-watch(id, load);
+watch(
+  () => route.hash,
+  () => {
+    void focusEvidence();
+  },
+);
 onMounted(load);
 onUnmounted(() => {
   active = false;
@@ -207,53 +251,65 @@ onUnmounted(() => {
       >
     </div>
 
+    <p
+      v-if="evidenceNotice"
+      class="history-notice history-warning"
+      role="status"
+    >
+      {{ evidenceNotice }}
+    </p>
     <div class="detail-grid">
-      <section class="section-block">
-        <div class="section-heading">
-          <h2>失败证据</h2>
-          <span>{{ run.failures.length }} 条</span>
-        </div>
-        <div v-if="run.parse_status === 'pending'" class="empty-note">
-          报告仍在等待解析，当前没有可展示的失败证据。
-        </div>
-        <div
-          v-else-if="run.parse_status === 'failed'"
-          class="empty-note error-note"
-        >
-          报告解析失败。{{ run.parse_error_message || "请检查报告格式。" }}
-        </div>
-        <div v-else-if="run.failures.length === 0" class="empty-note">
-          解析已完成，没有记录到 failure 或 error。
-        </div>
-        <article
-          v-for="failure in run.failures"
-          :id="evidenceId(failure)"
-          :key="failure.id"
-          class="failure-row"
-        >
-          <div class="failure-top">
-            <span class="issue-type" :class="failure.issue_type">{{
-              failure.issue_type
-            }}</span
-            ><span class="evidence-key mono">{{ evidenceId(failure) }}</span>
+      <div class="evidence-column">
+        <section class="section-block">
+          <div class="section-heading">
+            <h2>失败证据</h2>
+            <span>{{ run.failures.length }} 条</span>
           </div>
-          <h3>{{ failure.test_name }}</h3>
-          <p class="failure-path mono">
-            {{
-              [failure.suite_name, failure.classname]
-                .filter(Boolean)
-                .join(" / ")
-            }}
-          </p>
-          <p v-if="failure.message" class="failure-message">
-            {{ failure.message }}
-          </p>
-          <details>
-            <summary>查看错误详情</summary>
-            <pre>{{ failure.details }}</pre>
-          </details>
-        </article>
-      </section>
+          <div v-if="run.parse_status === 'pending'" class="empty-note">
+            报告仍在等待解析，当前没有可展示的失败证据。
+          </div>
+          <div
+            v-else-if="run.parse_status === 'failed'"
+            class="empty-note error-note"
+          >
+            报告解析失败。{{ run.parse_error_message || "请检查报告格式。" }}
+          </div>
+          <div v-else-if="run.failures.length === 0" class="empty-note">
+            解析已完成，没有记录到 failure 或 error。
+          </div>
+          <article
+            v-for="failure in run.failures"
+            :id="evidenceId(failure)"
+            :key="failure.id"
+            class="failure-row"
+            tabindex="-1"
+          >
+            <div class="failure-top">
+              <span class="issue-type" :class="failure.issue_type">{{
+                failure.issue_type
+              }}</span><span class="evidence-key mono">{{
+                evidenceId(failure)
+              }}</span>
+            </div>
+            <h3>{{ failure.test_name }}</h3>
+            <p class="failure-path mono">
+              {{
+                [failure.suite_name, failure.classname]
+                  .filter(Boolean)
+                  .join(" / ")
+              }}
+            </p>
+            <p v-if="failure.message" class="failure-message">
+              {{ failure.message }}
+            </p>
+            <details>
+              <summary>查看错误详情</summary>
+              <pre>{{ failure.details }}</pre>
+            </details>
+          </article>
+        </section>
+        <HistoryPanel :event-id="id" />
+      </div>
 
       <section class="section-block diagnosis-block">
         <div class="section-heading">
@@ -298,8 +354,7 @@ onUnmounted(() => {
               v-for="cause in diagnosisState.diagnosis.root_causes"
               :key="cause.title"
             >
-              <strong>{{ cause.title }}</strong
-              ><span class="confidence">{{
+              <strong>{{ cause.title }}</strong><span class="confidence">{{
                 cause.confidence === "high"
                   ? "较高置信度"
                   : cause.confidence === "medium"
@@ -308,13 +363,18 @@ onUnmounted(() => {
               }}</span>
               <p>{{ cause.explanation }}</p>
               <div class="evidence-links">
-                证据：<a
-                  v-for="refId in cause.evidence_ids"
-                  :key="refId"
-                  :href="`#${refId}`"
-                  class="mono"
-                  >{{ refId }}</a
-                >
+                <span>证据：</span>
+                <template v-for="refId in cause.evidence_ids" :key="refId">
+                  <RouterLink
+                    v-if="evidenceLocation(refId, id)"
+                    :to="evidenceLocation(refId, id).to"
+                    @click="focusCurrentReference(refId)"
+                    >{{ evidenceLocation(refId, id).label }}</RouterLink
+                  >
+                  <span v-else class="unavailable-reference"
+                    >证据引用不可用</span
+                  >
+                </template>
               </div>
             </li>
           </ol>
@@ -401,8 +461,7 @@ onUnmounted(() => {
                 type="submit"
                 :disabled="triggering || !triggerToken.trim()"
               >
-                {{ triggering ? "正在提交…" : "确认触发" }}</button
-              ><button
+                {{ triggering ? "正在提交…" : "确认触发" }}</button><button
                 class="text-button"
                 type="button"
                 :disabled="triggering"
