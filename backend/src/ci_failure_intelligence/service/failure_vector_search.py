@@ -1,12 +1,14 @@
 """根据当前失败查询同仓库的历史向量候选。"""
 
-import asyncio
 from datetime import datetime
 
 from fastembed import TextEmbedding
 from qdrant_client import AsyncQdrantClient, models
 
 from ci_failure_intelligence.core.config import RetrievalSettings
+from ci_failure_intelligence.infrastructure.ai.embedding_model import (
+    run_embedding_in_thread,
+)
 from ci_failure_intelligence.schemas.ci_failure_query import (
     CiFailureDetailResponse,
 )
@@ -58,9 +60,9 @@ async def search_failure_candidates(
     # 查询和索引使用同一套文本整理规则。
     # 把当前错误变成查询文本
     text = build_failure_index_text(detail)
-    vectors = await asyncio.to_thread(
-        list,
-        embedding_model.embed([text], batch_size=1),
+    # 在线程内完成生成器迭代；取消时等计算结束后再释放外层许可。
+    vectors = await run_embedding_in_thread(
+        lambda: list(embedding_model.embed([text], batch_size=1))
     )
 
     if len(vectors) != 1:

@@ -41,6 +41,22 @@ class FakeClient:
     async def create_collection(self, **kwargs: object) -> None:
         self.created = True
 
+    async def scroll(self, *, scroll_filter, **kwargs):
+        event_id = scroll_filter.must[0].match.value
+        return (
+            [
+                models.Record(id=point.id, payload=point.payload)
+                for point in self.stored.values()
+                if point.payload is not None and point.payload["event_id"] == event_id
+            ],
+            None,
+        )
+
+    async def delete(self, *, points_selector, wait, **kwargs):
+        assert wait is True
+        for point_id in points_selector.points:
+            self.stored.pop(point_id, None)
+
     async def upsert(
         self, *, collection_name: str, points: list[models.PointStruct], wait: bool
     ) -> None:
@@ -134,6 +150,7 @@ def test_repeated_event_does_not_duplicate_but_new_event_keeps_history() -> None
     run_index(event, client, model)
     run_index(event, client, model)
     assert len(client.stored) == 1
+    assert len(model.calls) == 1
     run_index(event.model_copy(update={"event_id": 14}), client, model)
     assert len(client.stored) == 2
 
