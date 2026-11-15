@@ -23,7 +23,7 @@
 
 ### 1. 领取访问凭据
 
-向维护者申请邀请，并说明你要查看记录、接入仓库，还是生成诊断。
+通过 [GitHub Issues 申请访问](https://github.com/LCY-666lll/CI_Failure_Intelligence/issues/new?title=%E7%94%B3%E8%AF%B7%E8%AE%BF%E9%97%AE%20CFI)，说明你要查看记录、接入仓库，还是生成诊断。维护者确认后通过约定的私下渠道发放凭据；请勿在公开 Issue 中粘贴令牌、密钥或私有报告。
 
 | 凭据 | 用途 | 填写位置 |
 |---|---|---|
