@@ -6,9 +6,108 @@
 
 将 GitHub Actions 的 JUnit 失败报告转为可追溯的错误记录，检索同仓库的相似历史，再根据当前与历史证据生成结构化 AI 诊断。每条诊断引用都可以回到真实失败明细。
 
-**[访问线上工作台](https://cifailure.xyz)** · [前端说明](frontend/README.md) · [CI 接入示例](.github/workflows/backend-ci.yml)
+**[接入与使用](#接入与使用从这里开始)** · [访问线上工作台](https://cifailure.xyz) · [CI 接入示例](.github/workflows/backend-ci.yml)
 
 > 线上服务已部署，采用邀请制访问。读取令牌由项目所有者单独发放；生成诊断使用独立触发令牌。当前是小规模共享工作区，不提供公开注册、个人账号或仓库级权限隔离。
+
+## 接入与使用：从这里开始
+
+**只想查看已有失败记录？完成第 1、2 步即可。要把自己的 GitHub 仓库接进来？继续完成第 3～5 步。需要生成 AI 诊断时，再做第 6 步。**
+
+使用已上线的服务，只需在自己电脑的浏览器打开网页，不需要下载本项目、启动 Docker，也不需要在本机填写 `.env`。下面先介绍这种用法；想运行自己的实例，请看后面的[本地开发](#本地开发运行自己的实例)。
+
+### 第 1 步：向维护者领取所需凭据
+
+目前没有注册或 GitHub 登录入口。请向项目维护者申请访问；接入仓库前，还需确认维护者允许接收该仓库的失败报告。
+
+| 你要做什么 | 需要领取什么 | 填在哪里 |
+|---|---|---|
+| 看失败记录、相似历史和已有诊断 | **读取令牌** | 网页入口的“读取令牌”输入框 |
+| 让你的 GitHub Actions 发送失败报告 | **CI 接入 HMAC 密钥** | 你的 GitHub 仓库的 Actions Secret `CFI_INGEST_HMAC_SECRET` |
+| 手动生成新的 AI 诊断 | **诊断触发令牌**，按授权单独发放 | 事件详情中的“付费诊断触发令牌”输入框 |
+
+三者用途不同，不能互相替代。它们由 CFI 实例维护者配置和发放，**不是 GitHub Personal Access Token**。普通使用者不需要提供自己的 DeepSeek API Key，模型服务由实例维护者配置。
+
+当前共享读取令牌可以查看该实例接入的全部仓库。请先确认报告内容适合在该共享工作区展示，再接入包含内部错误信息的仓库。
+
+### 第 2 步：在浏览器进入工作台
+
+1. 打开 **[https://cifailure.xyz](https://cifailure.xyz)**。
+2. 粘贴第 1 步领到的**读取令牌**，点击“**进入工作台**”。
+3. 页面显示运行列表后，即可进入某条事件，查看失败明细、相似历史和已有诊断。
+
+读取令牌保存在当前标签页的 `sessionStorage`，刷新可继续使用；点击“断开”或读取接口返回 401 时会清除。重新打开网页时，如果出现令牌输入框，再次输入即可。
+
+**网页能打开不代表已经接入你的仓库。** 此时看到的是该实例已有的记录；下面的 GitHub 配置和 workflow 决定你的报告能否进入这里。
+
+### 第 3 步：在你的 GitHub 仓库配置地址和密钥
+
+进入**要发送失败报告的那个仓库**，打开：
+
+**Settings → Secrets and variables → Actions**
+
+| 选项卡与操作 | Name（名称，原样填写） | Value / Secret（值） |
+|---|---|---|
+| **Variables → New repository variable** | `CFI_INGEST_URL` | `https://cifailure.xyz/api/v1/ci-runs/ingest` |
+| **Secrets → New repository secret** | `CFI_INGEST_HMAC_SECRET` | 第 1 步领取的 **CI 接入 HMAC 密钥** |
+
+地址必须包含完整的 `/api/v1/ci-runs/ingest` 路径。这里不填网页读取令牌，也不填诊断触发令牌。密钥放在 **Secrets**，不放在 Variables、workflow 明文或提交到 Git 的文件中。
+
+如果你只有读取权限、不负责仓库 CI，可以请该仓库维护者完成第 3、4 步。GitHub 的操作说明见[变量配置](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-variables)和[密钥配置](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets)。
+
+### 第 4 步：让 workflow 在测试失败时发送报告
+
+**只添加上面两项配置，还不会自动发送任何数据。** 目标仓库还需要测试报告和发送步骤。
+
+参考本仓库的 [完整 workflow](.github/workflows/backend-ci.yml) 与 [Python 发送脚本](scripts/ci/send_ci_failure.py)，按下面顺序接入目标仓库：
+
+1. 将发送脚本放到目标仓库的 `scripts/ci/send_ci_failure.py`。
+2. 在目标仓库的 `.github/workflows/` 中修改现有测试 workflow：让测试命令生成 **JUnit XML**。参考实现使用 pytest，测试步骤的 `id` 为 `backend_tests`，报告输出到 `reports/backend-junit.xml`。
+3. 参考 workflow 中测试后的三个步骤：`Upload failed backend test report`、`Check CI failure delivery inputs`、`Send CI failure report`，把它们接到对应测试 Job 中；保证该 Job 能运行 Python 发送脚本。
+4. 按目标项目调整下表中的内容，然后提交 workflow 与发送脚本。
+
+| 需要对齐的内容 | 参考实现 | 迁移时怎么改 |
+|---|---|---|
+| 测试环境与命令 | Python 3.12、uv、`backend/`、pytest | 替换成目标项目实际的依赖安装和测试命令，并产出 JUnit XML |
+| 测试步骤身份 | `id: backend_tests` | 若使用其他 ID，同步修改三个后续步骤引用的 `steps.backend_tests.conclusion` |
+| 报告路径 | `reports/backend-junit.xml` | 测试输出、artifact 路径、检查文件路径和 `CFI_JUNIT_XML_PATH` 必须指向同一份报告 |
+| 运行身份 | `CFI_GITHUB_*` 环境变量 | 保留 workflow 从 `github` 上下文取值的映射；Job 名称按目标 Job 调整，无需到 Settings 手填这些变量 |
+| 发送命令 | `uv run --project backend --locked python scripts/ci/send_ci_failure.py` | 参考命令依赖本仓库的 `backend/` 和 uv 配置；目标项目必须改成自己的 Python 运行方式 |
+
+参考 workflow 是本项目后端的 CI，**不能不做适配就当成任意仓库的一键接入文件**。其他测试框架也需要先生成 JUnit XML；当前没有网页上传报告或自动扫描全部 GitHub 仓库的功能。
+
+发送端会读取第 3 步的地址和密钥，连同当前运行身份构造签名请求。参考实现仅在测试步骤失败时投递；fork PR 只保留报告，不使用仓库密钥投递。
+
+### 第 5 步：确认报告已经进来
+
+1. 在目标仓库运行一次**确实产生 JUnit 失败报告**的 CI。测试全部通过时，参考 workflow 不会投递；依赖安装失败、尚未执行测试时，也不能用来验证报告接入。
+2. 打开 GitHub 的 **Actions → 对应运行 → 测试 Job**，查看 `Check CI failure delivery inputs` 和 `Send CI failure report`。
+3. 发送成功时，日志包含 `原始 CI 失败事件已保存：run_id=... run_attempt=... job_key=...`。这表示平台已接收原始事件，**尚不代表报告已经解析或 AI 诊断已经生成**。
+4. 回到网页，点击“**刷新列表**”，按仓库、运行 ID 和 Job 找到这次失败，再进入详情。
+5. 新报告可能先显示待解析。后台每轮完成后等待 300 秒；稍后点击“**刷新详情**”，确认能看到测试名称、错误信息和堆栈。首次接入没有相似历史属于正常情况。
+
+到这里，已经完成“GitHub 测试失败 → 签名投递 → 网页查看失败证据”的接入闭环。页面仅展示已投递的失败事件，不会同步仓库的所有提交或成功运行。
+
+### 第 6 步：需要时再触发 AI 诊断
+
+在事件详情的 **AI 诊断**区域查看当前状态。已有诊断可直接阅读；尚未生成时，授权者点击“**使用授权令牌触发诊断**”，输入独立的**诊断触发令牌**，再点击“**确认触发**”。
+
+- **新诊断已完成**：结果已保存，可查看建议及证据引用。
+- **已复用已有诊断**：命中有效缓存，本次没有调用模型。
+- **已有诊断任务正在处理中**：页面自动查询结果，本次不会重复启动生成。
+
+报告自动解析和索引不会自动触发付费诊断。生成新诊断可能产生模型费用；触发令牌仅临时保存在页面内存中。点击诊断中的当前或历史证据引用，可以回到对应失败位置。
+
+### 卡在哪一步，先看这里
+
+| 现象 | 优先检查 |
+|---|---|
+| 网页能打开，但提示读取令牌无效 | 是否使用该实例维护者发放的读取令牌，而非 HMAC 密钥或触发令牌 |
+| GitHub 已配置变量，但页面没有新记录 | workflow 是否接上发送步骤；测试是否真的失败并生成 JUnit；发送步骤是否执行成功 |
+| GitHub 提示缺少配置 | 配置是否加在目标仓库；地址是否在 Variables、密钥是否在 Secrets；名称是否完全一致 |
+| 投递返回 401 | HMAC 密钥是否与目标实例一致、请求时间是否正常；网页读取令牌不能用于投递 |
+| 发送成功，但详情仍在等待解析 | 原始接收与后台解析是两个阶段，等待后刷新详情；持续不变时联系实例维护者检查后台 |
+| 有失败明细，但没有 AI 诊断 | 需要持有独立触发令牌的授权者主动确认生成 |
 
 ## 可以做什么
 
@@ -55,17 +154,6 @@ PostgreSQL 是业务事实来源，Qdrant 是可重建的检索索引；历史�
 | 接入安全 | HMAC、timestamp、nonce、Redis；签名验证与防重放 |
 | 工程 | uv、pytest、Docker Compose、GitHub Actions |
 
-## 访问与使用
-
-1. 打开 [cifailure.xyz](https://cifailure.xyz)，输入项目所有者提供的**读取令牌**。
-2. 从运行列表进入事件详情，查看失败证据及相似历史。
-3. 阅读已有诊断，点击当前或历史引用回到对应错误位置。
-4. 仅在需要时，由持有**诊断触发令牌**的授权者确认生成；该操作可能产生模型费用。
-
-读取令牌保存在当前标签页的 `sessionStorage` 中，刷新可继续使用；点击“断开”或读取鉴权失败后清除。诊断触发令牌仅临时保存在内存中。两类访问令牌、CI 接入 HMAC 密钥和 DeepSeek API Key 各有独立用途，不应混用。
-
-共享读取令牌可查看当前部署接入的全部仓库。仓库名称展示与检索过滤不等于用户权限隔离。
-
 ## HTTP 接口
 
 线上接口使用 `https://cifailure.xyz` 作为根地址。
@@ -82,20 +170,13 @@ PostgreSQL 是业务事实来源，Qdrant 是可重建的检索索引；历史�
 
 `event_id` 是平台内部事件主键，不是 GitHub 的 `run_id`。诊断 GET 返回 `not_started / processing / completed / failed`；诊断 POST 返回 `generated / cached / in_progress`。历史的 `available / not_ready / degraded / disabled` 应与结果列表一起解释，不能把检索故障显示成“没有历史”。
 
-## GitHub Actions 接入
+## 本地开发：运行自己的实例
 
-现有参考实现包含 [后端 workflow](.github/workflows/backend-ci.yml) 和 [Python 发送端](scripts/ci/send_ci_failure.py)。接入仓库需要：
+这一节供修改代码或运行独立实例的人使用。仅使用线上工作台的受邀用户，完成前面的“接入与使用”即可。
 
-| GitHub 配置 | 值 |
-|---|---|
-| Repository Variable `CFI_INGEST_URL` | `https://cifailure.xyz/api/v1/ci-runs/ingest`，或自建实例对应地址 |
-| Repository Secret `CFI_INGEST_HMAC_SECRET` | 与目标实例约定的接入 HMAC 密钥 |
+本地网页默认请求本地后端，**不会因为输入线上令牌就连接线上服务**。本地运行时，网页读取令牌、诊断触发令牌与 GitHub 投递密钥都要对应这套本地后端的配置，分别为 `CFI_FAILURE_READ_TOKEN`、`CFI_AI_DIAGNOSIS_TRIGGER_TOKEN`、`CFI_INGEST_HMAC_SECRET`。仅启动前端无法提供完整功能。
 
-Workflow 在测试失败时保存 JUnit artifact，并向发送端提供报告路径、仓库 ID、运行 ID、重跑次数、Job、提交和分支信息。发送端负责构造签名信封和有限重试。复用到其他项目时，需要适配测试命令及 JUnit 路径；fork PR 默认只保留报告，不使用仓库密钥投递。
-
-当前接入以已采集的失败 CI 运行作为数据来源，不会自动同步 GitHub 全部提交或成功运行。
-
-## 本地开发
+GitHub 托管 Runner 无法访问你电脑上的 `127.0.0.1:8002`；要接收它的报告，目标实例必须有 Runner 可访问的地址。使用线上实例时保持第 3 步的 HTTPS 地址；自行部署时由维护者提供自己的接入地址和凭据。
 
 前提：Python 3.12、uv、Node.js 24、npm 与 Docker Compose。配置示例见 [`.env.example`](.env.example)，前端开发说明见 [`frontend/README.md`](frontend/README.md)。
 
